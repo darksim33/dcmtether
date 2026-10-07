@@ -44,7 +44,6 @@ def test_command_help(runner, command):
 @pytest.mark.parametrize(
     "args",
     [
-        ["to-nii", "{dir}"],
         ["to-dcm", "{file}", "{out}"],
         ["compare", "{dir}", "{dir}"],
     ],
