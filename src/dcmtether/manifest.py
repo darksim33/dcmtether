@@ -15,9 +15,11 @@ from dcmtether import __version__
 from dcmtether.scan import ScanResult
 
 MANIFEST_NAME = "manifest.sqlite"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-_SCHEMA = """
+# Version 1 as written by Phase 1; newer versions are reached via _UPGRADES only, so new
+# manifests and upgraded old ones always end up identical.
+_SCHEMA_V1 = """
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -57,9 +59,89 @@ CREATE TABLE skipped_files (
 );
 """
 
+_UPGRADES = {
+    # 1 → 2 (Phase 2): labels and outputs of the NIfTI conversion; paths relative to the dataset.
+    2: """
+ALTER TABLE series ADD COLUMN subject TEXT;
+ALTER TABLE series ADD COLUMN session TEXT;
+ALTER TABLE series ADD COLUMN nifti_path TEXT;
+ALTER TABLE series ADD COLUMN tether_path TEXT;
+ALTER TABLE series ADD COLUMN sidecar_path TEXT;
+ALTER TABLE series ADD COLUMN conversion_status TEXT
+    CHECK (conversion_status IN ('converted', 'failed'));
+ALTER TABLE series ADD COLUMN conversion_error TEXT;
+""",
+}
+
+
+class ManifestError(RuntimeError):
+    pass
+
 
 def manifest_path(dataset: Path) -> Path:
     return dataset / MANIFEST_NAME
+
+
+def _schema_version(db: sqlite3.Connection) -> int:
+    return int(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0])
+
+
+def _upgrade(db: sqlite3.Connection) -> None:
+    version = _schema_version(db)
+    if version > SCHEMA_VERSION:
+        raise ManifestError(
+            f"manifest schema {version} is newer than this dcmtether supports ({SCHEMA_VERSION})"
+        )
+    for target in range(version + 1, SCHEMA_VERSION + 1):
+        db.executescript(_UPGRADES[target])
+        db.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(target),))
+
+
+def open_manifest(dataset: Path) -> sqlite3.Connection:
+    """Open an existing manifest, upgrading old schema versions in place."""
+    path = manifest_path(dataset)
+    if not path.exists():
+        raise ManifestError(f"no manifest in {dataset} (run 'dcmtether scan' first)")
+    db = sqlite3.connect(path)
+    db.row_factory = sqlite3.Row
+    with db:
+        _upgrade(db)
+    return db
+
+
+def source_root(db: sqlite3.Connection) -> Path:
+    return Path(db.execute("SELECT value FROM meta WHERE key = 'source_root'").fetchone()[0])
+
+
+def instance_paths(db: sqlite3.Connection, series_id: int) -> list[str]:
+    rows = db.execute("SELECT path FROM instances WHERE series_id = ? ORDER BY path", (series_id,))
+    return [r[0] for r in rows]
+
+
+def record_converted(
+    db: sqlite3.Connection,
+    series_id: int,
+    subject: str,
+    session: str,
+    nifti_path: str,
+    tether_path: str,
+    sidecar_path: str,
+) -> None:
+    with db:
+        db.execute(
+            """UPDATE series SET subject = ?, session = ?, nifti_path = ?, tether_path = ?,
+               sidecar_path = ?, conversion_status = 'converted', conversion_error = NULL
+               WHERE id = ?""",
+            (subject, session, nifti_path, tether_path, sidecar_path, series_id),
+        )
+
+
+def record_failed(db: sqlite3.Connection, series_id: int, error: str) -> None:
+    with db:
+        db.execute(
+            "UPDATE series SET conversion_status = 'failed', conversion_error = ? WHERE id = ?",
+            (error, series_id),
+        )
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -79,16 +161,17 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
     partial.unlink(missing_ok=True)
 
     with closing(sqlite3.connect(partial)) as db, db:
-        db.executescript(_SCHEMA)
+        db.executescript(_SCHEMA_V1)
         db.executemany(
             "INSERT INTO meta (key, value) VALUES (?, ?)",
             [
-                ("schema_version", str(SCHEMA_VERSION)),
+                ("schema_version", "1"),
                 ("tool_version", __version__),
                 ("source_root", str(result.root)),
                 ("scanned_at", datetime.now(UTC).isoformat(timespec="seconds")),
             ],
         )
+        _upgrade(db)
         for series_id, series in enumerate(result.series, start=1):
             first = series.first
             source_dir = Path(os.path.commonpath([i.path.parent for i in series.instances]))
