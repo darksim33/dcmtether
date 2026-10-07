@@ -5,6 +5,7 @@ description = "Lossless DICOM <-> NIfTI round trips for MRI series, with properl
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "click>=8.5.0",
     "highdicom>=0.28.2",
     "nibabel>=5.4.2",
     "numpy>=2.5.3",
