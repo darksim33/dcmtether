@@ -6,7 +6,8 @@ from pathlib import Path
 import click
 
 from dcmtether import __version__
-from dcmtether.manifest import manifest_path, write_manifest
+from dcmtether.forward import convert_dataset
+from dcmtether.manifest import ManifestError, manifest_path, write_manifest
 from dcmtether.scan import Status, plural
 from dcmtether.scan import scan as scan_directory
 
@@ -65,8 +66,24 @@ def scan(source: Path, dataset: Path) -> None:
 @main.command("to-nii")
 @click.argument("dataset", type=_existing_dir)
 def to_nii(dataset: Path) -> None:
-    """Convert scanned series in DATASET to NIfTI + tether.json."""
-    _not_implemented("to-nii")
+    """Convert scanned series in DATASET to NIfTI + tether.json.
+
+    Converts every 'supported' series not converted yet; failed ones are retried. File names
+    contain patient names and study dates, so the dataset must not be shared as is.
+    """
+    try:
+        outcomes = convert_dataset(dataset)
+    except ManifestError as exc:
+        raise click.ClickException(str(exc)) from None
+
+    # Output names series by manifest id only (PHI rules); file names are not printed.
+    converted = [o for o in outcomes if o.ok]
+    failed = [o for o in outcomes if not o.ok]
+    click.echo(f"Converted {len(converted)} series, {len(failed)} failed.")
+    for outcome in failed:
+        click.echo(f"  series #{outcome.series_id} failed: {outcome.message}")
+    if failed:
+        raise click.exceptions.Exit(1)
 
 
 @main.command("to-dcm")
