@@ -12,7 +12,6 @@ descriptions or paths) so they are safe to print and to include in failure repor
 """
 
 import os
-import warnings
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -21,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 import pydicom
-from pydicom import config
 from pydicom.errors import InvalidDicomError
 from pydicom.uid import (
     UID,
@@ -30,6 +28,8 @@ from pydicom.uid import (
     ImplicitVRLittleEndian,
     MRImageStorage,
 )
+
+from dcmtether._quiet import quiet_pydicom
 
 SUPPORTED_SOP_CLASSES = frozenset({MRImageStorage})
 UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset(
@@ -164,14 +164,8 @@ def read_instance(path: Path) -> Instance | SkippedFile:
     pydicom value-validation warnings are suppressed: they quote element values (names, IDs,
     UIDs), which must not reach the console or logs. Invalid values are kept as read.
     """
-    previous = config.settings.reading_validation_mode
-    config.settings.reading_validation_mode = config.IGNORE
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return _read_instance(path)
-    finally:
-        config.settings.reading_validation_mode = previous
+    with quiet_pydicom():
+        return _read_instance(path)
 
 
 def _classify_non_part10(path: Path) -> str:
