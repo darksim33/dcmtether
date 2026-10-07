@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phase 0 done; next: Phase 1. This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–1 done; next: Phase 2. This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -141,6 +141,18 @@ Outcome and decisions:
 - Write the manifest.
 
 **Done when:** every test series gets a correct classification with a human-readable reason; scan output contains no pixel data reads.
+
+**Status: ✅ done (2026-10-07, branch `phase-1-scan`).** Fresh-copy check: format + lint clean, 94 tests pass, none skipped. Code: `src/dcmtether/scan.py`, `src/dcmtether/manifest.py`, `dcmtether scan SOURCE DATASET`.
+Outcome and decisions:
+- **Status rules.** `supported` = one regular stack or a single slice. `split` = several stacks in one series: distinct image planes (orientation/matrix/pixel spacing, e.g. localizers) or equal-count volumes at the same positions (multi-echo/DWI/dynamics). `unsupported` = anything else needing a guess: missing slices, non-uniform spacing, sheared stack, mixed thickness, per-instance rescale, duplicate SOPInstanceUID, uneven instances per position, mosaic, multi-frame, compressed or deflated transfer syntax, non-MR SOP class, missing geometry, mixed SOP class/TS/modality/frame of reference/study, non-grayscale or mixed pixel format. Unsupported wins over split. **All** findings are reported, not just the first; geometry checks are skipped for rejected SOP classes and multi-frame (noise).
+- **Supported SOP classes:** MR Image Storage only. **Transfer syntaxes:** Implicit VR LE, Explicit VR LE, Explicit VR BE.
+- **Tolerances:** orientation cosines and pixel spacing 1e-4; positions and slice-spacing jitter 0.01 mm (`ORIENTATION_TOL`, `POSITION_TOL_MM`). Jitter inside the tolerance is lossless anyway, since `tether.json` keeps the exact IPP.
+- **Privacy.** Reasons and CLI output never contain UIDs, names, descriptions, dates or paths; series are named by manifest id. pydicom value-validation warnings are suppressed during the scan (they quote element values); invalid values are kept as read.
+- **Skipped files** are recorded with a reason: not DICOM, no SeriesInstanceUID, unreadable header, or *bare dataset without preamble/file meta* (detected separately, not supported).
+- **Manifest schema v1** (`manifest.sqlite`): `meta` (schema/tool version, source root, scan time), `series` (one row per SeriesInstanceUID, UNIQUE; ids 1..n in scan order; reasons and geometry as JSON), `instances` (relative POSIX paths), `skipped_files`. Subject/session/NIfTI path columns are added in Phase 2 with a schema bump. An existing manifest is never overwritten; writes go to a `.partial` file first.
+- The target dataset directory is excluded from the walk when it lies inside the source.
+- On the public test data, all MR codec variants share series UIDs, so only the GE ADC series (when scanned on its own) and single Siemens/pydicom MR files are `supported`; everything else is correctly `unsupported`.
+- Note for Phase 4: per-volume rescale in 4D series (Philips) is currently `unsupported`; the splitting policy should allow rescale to vary between volumes but not within one.
 
 ### Phase 2 — Forward: DICOM → NIfTI + metadata
 - Volume assembly from pydicom (own writer, sort by ImagePositionPatient projected on slice normal).

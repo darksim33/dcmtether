@@ -246,6 +246,35 @@ def make_localizer(seed: int = 0) -> SyntheticSeries:
     return SyntheticSeries(base, datasets, volume, None, series_uid)
 
 
+def make_4d(spec: SeriesSpec | None = None, n_volumes: int = 3) -> SyntheticSeries:
+    """``n_volumes`` volumes at identical slice positions in one series (e.g. multi-echo).
+
+    Volumes differ by EchoNumbers/EchoTime and by pixel values; ``volume`` is 4D
+    (rows, columns, slices, volumes).
+    """
+    spec = spec or SeriesSpec()
+    series_uid = synthetic_uid("4d", spec.seed, spec)
+    parts = [
+        make_series(replace(spec, series_number=spec.series_number + v)) for v in range(n_volumes)
+    ]
+    datasets = []
+    for v, part in enumerate(parts):
+        for k, ds in enumerate(part.datasets):
+            ds.SeriesInstanceUID = series_uid
+            ds.SeriesNumber = spec.series_number
+            ds.EchoNumbers = v + 1
+            ds.EchoTime = DS(15 * (v + 1))
+            ds.InstanceNumber = v * len(part.datasets) + k + 1
+            ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID = synthetic_uid(
+                "sop", series_uid, v, k
+            )
+            pixels = np.frombuffer(ds.PixelData, dtype=part.volume.dtype) + v * 100
+            ds.PixelData = pixels.astype(part.volume.dtype).tobytes()
+            datasets.append(ds)
+    volume = np.stack([p.volume + v * 100 for v, p in enumerate(parts)], axis=-1)
+    return SyntheticSeries(spec, datasets, volume.astype(parts[0].volume.dtype), None, series_uid)
+
+
 def write_series(series: SyntheticSeries, directory: Path) -> list[Path]:
     """Write datasets as ``IM_0001``… in list order; return the paths."""
     directory.mkdir(parents=True, exist_ok=True)
