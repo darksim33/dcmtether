@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # uv
-uv.lock
+# uv.lock
 .python-version
 
 # test files
