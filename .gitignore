@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# uv
+uv.lock
+.python-version
+
+# test files
+.cache/
