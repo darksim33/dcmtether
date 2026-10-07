@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phases 0–1 done; next: Phase 2. This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–2 done; next: Phase 3 (gate). This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -35,11 +35,11 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | Instance index order | `instances[].index` refers to positions in the **DICOM-order volume** (`pixel.shape_dicom`, before reorientation), never to NIfTI/RAS order. Mapping to NIfTI goes through `ornt_transform` only. |
 | DS/IS strings | Store the **original string** for DS/IS values whose canonical re-formatting differs (side map in `tether.json`), so round trips stay string-identical rather than merely numerically equal. |
 | Human metadata | Separate BIDS-style `*.json` sidecar (keyword: value) — readable, not used for recovery. |
-| Naming | BIDS-inspired key-value filenames with custom entities, always including the series number: `sub-01_ses-01_bodypart-knee_acq-sagPD_ser-05_T2w.nii.gz`. |
+| Naming | BIDS-inspired key-value filenames with custom entities, always including the series number: `sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz`, folder `sub-…/ses-…/anat/`. **No body-part entity** (decided 2026-10-07; BodyPartExamined stays in manifest and sidecar). `acq-` = SeriesDescription reduced to letters/digits, camelCase, ≤24 chars. Suffix `T1w`/`T2w`/`PDw`/`FLAIR` from description keywords (T2* excluded), else TR/TE/TI rules, else `MR`; rule recorded in the sidecar. |
 | Collisions | Never silent. Existing target → error (or explicit suffix + log). Manifest enforces uniqueness on SeriesInstanceUID. |
 | Manifest | **SQLite** (stdlib, supports in-place status updates for resumable runs; Parquet would add `pyarrow` for little gain). One table per dataset: one row per NIfTI with paths, subject, session, body part, modality, vendor, SOPClassUID, TransferSyntaxUID, SeriesInstanceUID, StudyInstanceUID, source directory, status. |
 | New UIDs | `2.25.<uuid-as-integer>` (no org root needed). Deterministic via `uuid.uuid5(namespace, source_uid + derivation + content_hash)` so identical reruns reproduce UIDs, but **different content always gets a different UID** (reusing a UID for changed data violates DICOM uniqueness and PACS may silently keep only one copy). Note: pydicom's `generate_uid()` uses pydicom's root by default — don't use it as-is. |
-| Subject mapping | The PatientID/study → `sub-XX`/`ses-XX` map is a re-identification key (PHI). Stored **outside** the shareable dataset folder, never committed, never logged. |
+| Subject/session labels | **Decided 2026-10-07 (replaces the earlier pseudonymous mapping-file plan):** `sub-` = first 5 letters of family + first 5 of given name (umlauts transliterated, ASCII letters only, CamelCase); `ses-` = StudyDate, plus `THHMM` from StudyTime only when one subject has several studies that day. **The dataset itself therefore identifies patients and must not be shared as is.** Clashes are never silent: different PatientIDs with the same subject label, same-day studies with equal times, or two series mapping to one file name → those series fail with an error naming manifest ids only. Missing PatientName or StudyDate → the series fails (anonymized data cannot be converted under this scheme). |
 | Validation | `dicom-validator` (pure Python, `validate_iods`) in pytest. `dciodvfy` (dicom3tools, C++) as an extra check later via subprocess/Docker. |
 | Derivatives | `highdicom`: `seg.Segmentation` for label maps, `pm.ParametricMap` for ADC/QSM. Fallback: derived MR images (`ImageType = DERIVED\SECONDARY`) for PACS that can't display SEG/PM. Source datasets are rebuilt in memory from `tether.json` — no original files needed. |
 | Research labeling | SeriesDescription suffix "RESEARCH USE ONLY", ContentLabel/ContentDescription (SEG/PM), ImageComments, Manufacturer/SoftwareVersions = this tool + version. No burned-in watermark by default (if ever added: set `BurnedInAnnotation = YES`). |
@@ -53,13 +53,13 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 ```
 dataset/
 ├── manifest.sqlite
-├── README.md                       # documents custom entities (bodypart-, ser-, …)
-└── sub-01/
-    └── ses-01/
+├── README.md                       # identifying-data warning + custom entities (acq-, ser-, …)
+└── sub-MuellThoma/
+    └── ses-20260314/
         └── anat/
-            ├── sub-01_ses-01_bodypart-knee_acq-sagPD_ser-05_T2w.nii.gz
-            ├── sub-01_ses-01_bodypart-knee_acq-sagPD_ser-05_T2w.json         # human sidecar
-            └── sub-01_ses-01_bodypart-knee_acq-sagPD_ser-05_T2w.tether.json   # recovery metadata
+            ├── sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz
+            ├── sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.json         # human sidecar
+            └── sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.tether.json   # recovery metadata
 ```
 
 Derivatives later go under `dataset/derivatives/<tool-name>/…` mirroring the same structure.
@@ -92,7 +92,7 @@ Derivatives later go under `dataset/derivatives/<tool-name>/…` mirroring the s
     "dtype": "int16",
     "shape_dicom": [512, 512, 30],
     "orientation": {
-      "from": "dicom_acquisition_order",
+      "from": "dicom_rows_columns_slices",
       "to": "closest_RAS",
       "ornt_transform": [[1, 1], [0, -1], [2, 1]]
     }
@@ -101,6 +101,8 @@ Derivatives later go under `dataset/derivatives/<tool-name>/…` mirroring the s
 ```
 
 Notes:
+- `pixel.orientation.from = dicom_rows_columns_slices`: array axes (row index, column index, slice), slices sorted by ascending position along `cross(row_dir, col_dir)` (not acquisition order).
+- `file_name` is the source path relative to the series' source directory (POSIX).
 - `index` is in DICOM volume order (`shape_dicom`), not NIfTI order. It is a list so 4D series fit: `[slice]` for 3D, `[slice, volume]` for multi-echo / DWI / dynamics.
 - Enhanced multi-frame: one instance with N frames; per-frame functional groups stay in `elements` (format may get a `frames` block in Phase 4).
 - PixelData (7FE0,0010) is never stored here.
@@ -164,6 +166,18 @@ Outcome and decisions:
 
 **Done when:** all `supported` test series convert; oracle comparisons agree or differences are documented as deliberate.
 
+**Status: ✅ done (2026-10-07, branch `phase-2-forward`).** Format + lint clean, 225 tests pass, none skipped. Code: `src/dcmtether/{forward,naming,orientation,tether,_quiet}.py`, `dcmtether to-nii DATASET`.
+Outcome and decisions:
+- **Oracle:** dcm2niix (PyPI `dcm2niix`, dev dependency) agrees exactly with our output on 10 synthetic orientation variants (axial/coronal/sagittal, flips, two obliques, descending, shuffled, signed) and on the real oblique GE ADC series: same shape, affine within 1e-3 mm, identical raw voxels after reorienting both to closest RAS. No deliberate differences. Single-slice series are only checked against ground truth.
+- **Ground truth:** every NIfTI voxel is checked in world space against the synthetic volume (NIfTI RAS → LPS → synthetic index), independent of our reorientation code; all 48 axis permutation/flip cases round-trip through `to_closest_ras`/`from_closest_ras`.
+- **NIfTI:** gzip, raw stored values in the source dtype, sform = qform (code 1, scanner), units mm. The header is written directly because nibabel's normal save recomputes `scl_slope`/`scl_inter`; uniform DICOM rescale is stored there, otherwise slope/inter stay unset. (nibabel moves scaling into `img.dataobj` on load, so check `dataobj.slope`, not `header.get_slope_inter()`.) Single slice: slice spacing from SpacingBetweenSlices, else SliceThickness, else 1 mm.
+- **Re-validation:** before converting, each series' headers are re-read and re-classified; a series that is no longer `supported` (files changed or missing since the scan) fails instead of converting.
+- **tether.json:** built with `to_json_dict()` (InlineBinary for bulk data), pixel elements (7FE0,0010/0008/0009) removed, shared/per-instance split also for file meta. A header that cannot be expressed as DICOM JSON fails the series (no silent loss). DS/IS original strings are **not** captured yet (Phase 3).
+- **Sidecar:** curated BIDS-style keys (times in seconds), `DcmTether.{Version, SuffixRule}`; no patient identifiers or dates.
+- **Manifest schema v2:** adds `subject`, `session`, `nifti_path`, `tether_path`, `sidecar_path`, `conversion_status` (`converted`/`failed`), `conversion_error`. New manifests are created as v1 and upgraded, so the upgrade path is always exercised. Re-running `to-nii` skips converted series and retries failed ones. Unexpected exceptions are stored in full in the manifest only; the CLI prints the exception type.
+- **Collisions:** existing output files are never overwritten (series fails, nothing partial is left behind).
+- pydicom value warnings are suppressed during conversion too (`_quiet.quiet_pydicom`).
+
 ### Phase 3 — Reverse + round-trip verification ⛔ gate
 - Rebuild per-instance datasets from `tether.json` (`Dataset.from_json`), apply inverse orientation, slice voxels back into PixelData, restore file meta, write files.
 - `compare` command: element-by-element (incl. sequences and private tags) + decoded pixel arrays; clear diff report.
@@ -202,7 +216,7 @@ Outcome and decisions:
 
 ## 6. Caveats & risks
 
-1. **PHI.** DICOM headers and therefore `*.tether.json` files are personal health data (GDPR). Keep real data out of Claude Code sessions entirely; treat output datasets with the same care as the source DICOMs. The subject mapping and the manifest (Study/Series UIDs) are identifying too.
+1. **PHI.** DICOM headers and therefore `*.tether.json` files are personal health data (GDPR). Keep real data out of Claude Code sessions entirely; treat output datasets with the same care as the source DICOMs. **File and folder names contain patient names and study dates** (§2), and the manifest holds UIDs and source paths, so the whole dataset is identifying. Code still never prints labels, names or output paths; problems are reported by manifest series id.
 2. **Identity definition.** Target = every data element equal + decoded pixels equal. Byte identity additionally depends on transfer syntax, defined vs undefined sequence lengths, padding and compression — stretch goal only for uncompressed originals.
 3. **DS/IS formatting.** DICOM JSON stores Decimal String / Integer String values as JSON numbers, so `"0.500000"` comes back as `"0.5"`. Decided: keep original strings where they differ (§2).
 4. **Character sets.** Respect SpecificCharacterSet (PN, LO, etc. with non-ASCII names) on both sides. JSON holds decoded UTF-8; re-encoding may not reproduce the original bytes (notably ISO 2022 escape sequences) — test explicitly.
@@ -223,7 +237,8 @@ Outcome and decisions:
 - [ ] Target viewer(s) for derivatives (3D Slicer / OHIF / clinical PACS)?
 - [x] DS/IS handling → store original strings where they differ (§2).
 - [x] Manifest format → SQLite (§2).
-- [ ] Where does the subject mapping file live (path/storage outside the dataset), and who may access it?
+- [x] Subject mapping → none: labels come from PatientName/StudyDate (§2, decided 2026-10-07).
+- [ ] Anonymized inputs (empty PatientName) currently fail naming. Fallback wanted (e.g. sanitized PatientID)?
 - [ ] Label-map metadata schema for SEG (reuse dcmqi's JSON template format?).
 - [ ] Is additional public test data (TCIA) acceptable, and which collections?
 
