@@ -1,10 +1,14 @@
 """Command-line interface. Subcommands are stubs until their phase lands (see docs/dev/PLAN.md)."""
 
+from collections import Counter
 from pathlib import Path
 
 import click
 
 from dcmtether import __version__
+from dcmtether.manifest import manifest_path, write_manifest
+from dcmtether.scan import Status, plural
+from dcmtether.scan import scan as scan_directory
 
 EXIT_NOT_IMPLEMENTED = 3
 
@@ -32,7 +36,30 @@ def scan(source: Path, dataset: Path) -> None:
 
     Writes the manifest to the DATASET directory.
     """
-    _not_implemented("scan")
+    target = manifest_path(dataset)
+    if target.exists():
+        raise click.ClickException(f"manifest already exists: {target}")
+    result = scan_directory(source, exclude=dataset)
+    write_manifest(dataset, result)
+
+    # Output names series by manifest id only: no UIDs, descriptions or paths (PHI rules).
+    n_instances = sum(len(s.instances) for s in result.series)
+    click.echo(
+        f"Scanned {result.n_files} files: {n_instances} DICOM instances in "
+        f"{len(result.series)} series, {plural(len(result.skipped), 'file')} skipped."
+    )
+    counts = Counter(s.status for s in result.series)
+    for status in Status:
+        click.echo(f"  {status.value + ':':<13}{counts[status]}")
+    for series_id, series in enumerate(result.series, start=1):
+        if series.status is not Status.SUPPORTED:
+            click.echo(
+                f"  series #{series_id} ({plural(len(series.instances), 'instance')}) "
+                f"{series.status.value}: {'; '.join(series.reasons)}"
+            )
+    for reason, n in sorted(Counter(s.reason for s in result.skipped).items()):
+        click.echo(f"  skipped {plural(n, 'file')}: {reason}")
+    click.echo(f"Manifest: {target}")
 
 
 @main.command("to-nii")
