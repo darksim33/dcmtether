@@ -184,6 +184,7 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
 @dataclass
 class Volume:
     datasets: list[pydicom.Dataset]  # sorted along the slice normal
+    strings: list[tether.Strings]  # original DS/IS strings, same order
     data: np.ndarray  # DICOM order (rows, columns, slices), raw stored values
     affine_lps: np.ndarray
 
@@ -202,29 +203,38 @@ def _revalidate(paths: list[Path]) -> None:
         raise ConversionError("series changed since scan: " + "; ".join(series.reasons))
 
 
+def volume_affine(datasets: list[pydicom.Dataset]) -> np.ndarray:
+    """LPS affine of a stack sorted along the slice normal (DICOM order)."""
+    first = datasets[0]
+    normal = orientation.slice_normal(first.ImageOrientationPatient)
+    positions = np.asarray([ds.ImagePositionPatient for ds in datasets], dtype=float) @ normal
+    if len(datasets) > 1:
+        spacing = float(np.mean(np.diff(positions)))
+    else:
+        spacing = float(first.get("SpacingBetweenSlices") or first.get("SliceThickness") or 1.0)
+    return orientation.affine_lps(
+        first.ImageOrientationPatient, first.ImagePositionPatient, first.PixelSpacing, spacing
+    )
+
+
 def assemble(paths: list[Path]) -> Volume:
     _revalidate(paths)
     with quiet_pydicom():
         datasets = [pydicom.dcmread(p) for p in paths]
+        # Before anything touches DS/IS elements: conversion loses their original strings.
+        strings = [tether.capture_strings(ds) for ds in datasets]
         normal = orientation.slice_normal(datasets[0].ImageOrientationPatient)
-        datasets.sort(
-            key=lambda ds: float(np.dot(np.asarray(ds.ImagePositionPatient, float), normal))
+        order = sorted(
+            range(len(datasets)),
+            key=lambda n: float(
+                np.dot(np.asarray(datasets[n].ImagePositionPatient, float), normal)
+            ),
         )
+        datasets = [datasets[n] for n in order]
+        strings = [strings[n] for n in order]
         data = np.stack([ds.pixel_array for ds in datasets], axis=-1)
-
-        positions = np.asarray([ds.ImagePositionPatient for ds in datasets], dtype=float) @ normal
-        if len(datasets) > 1:
-            spacing = float(np.mean(np.diff(positions)))
-        else:
-            ds = datasets[0]
-            spacing = float(ds.get("SpacingBetweenSlices") or ds.get("SliceThickness") or 1.0)
-        affine = orientation.affine_lps(
-            datasets[0].ImageOrientationPatient,
-            datasets[0].ImagePositionPatient,
-            datasets[0].PixelSpacing,
-            spacing,
-        )
-    return Volume(datasets, data, affine)
+        affine = volume_affine(datasets)
+    return Volume(datasets, strings, data, affine)
 
 
 def rescale(datasets: list[pydicom.Dataset]) -> tuple[float, float] | None:
@@ -353,6 +363,7 @@ def _convert_one(
         volume.data.dtype,
         volume.data.shape,
         ornt,
+        volume.strings,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)

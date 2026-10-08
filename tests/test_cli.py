@@ -7,7 +7,7 @@ from click.testing import CliRunner
 from synthetic import SeriesSpec, make_localizer, make_series, write_series
 
 from dcmtether import __version__
-from dcmtether.cli import EXIT_NOT_IMPLEMENTED, main
+from dcmtether.cli import main
 
 COMMANDS = ["scan", "to-nii", "to-dcm", "compare"]
 
@@ -39,22 +39,6 @@ def test_no_command_shows_help_as_usage_error(runner):
 @pytest.mark.parametrize("command", COMMANDS)
 def test_command_help(runner, command):
     assert runner.invoke(main, [command, "--help"]).exit_code == 0
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["to-dcm", "{file}", "{out}"],
-        ["compare", "{dir}", "{dir}"],
-    ],
-)
-def test_stub_commands_report_not_implemented(runner, tmp_path, args):
-    nifti = tmp_path / "x.nii.gz"
-    nifti.touch()
-    paths = {"dir": tmp_path, "file": nifti, "out": tmp_path / "out"}
-    result = runner.invoke(main, [a.format(**paths) for a in args])
-    assert result.exit_code == EXIT_NOT_IMPLEMENTED
-    assert "not implemented" in result.stderr
 
 
 @pytest.mark.parametrize(
