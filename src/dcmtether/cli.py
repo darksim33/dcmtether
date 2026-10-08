@@ -12,6 +12,7 @@ from dcmtether.manifest import ManifestError, manifest_path, write_manifest
 from dcmtether.reverse import ReverseError, tether_path_for, to_dicom, transfer_syntax_change
 from dcmtether.scan import Status, plural
 from dcmtether.scan import scan as scan_directory
+from dcmtether.seg import SegError, load_metadata, to_seg
 from dcmtether.tether import TetherError
 from dcmtether.tether import load as tether_load
 
@@ -127,3 +128,29 @@ def compare(original: Path, rebuilt: Path) -> None:
         click.echo(f"  note: {where}: {kind} ({plural(n, 'instance')})")
     if not report.identical:
         raise click.exceptions.Exit(1)
+
+
+@main.command("to-seg")
+@click.argument("nifti", type=_existing_file)
+@click.argument("labels", type=_existing_file)
+@click.argument("metadata", type=_existing_file)
+@click.argument("output", type=click.Path(dir_okay=False, path_type=Path))
+def to_seg_command(nifti: Path, labels: Path, metadata: Path, output: Path) -> None:
+    """Write a DICOM SEG for the label map LABELS on the grid of NIFTI.
+
+    NIFTI is a converted source (with its *.tether.json); LABELS must have the same shape and
+    affine. METADATA is a dcmqi segmentation template (JSON). Writes OUTPUT (a new file).
+    Research use only.
+    """
+    try:
+        result = to_seg(nifti, labels, load_metadata(metadata), output)
+    except SegError as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(
+        f"Wrote DICOM SEG with {plural(len(result.segment_numbers), 'segment')} on "
+        f"{plural(result.n_sources, 'source image')}."
+    )
+    renumbered = {k: v for k, v in result.segment_numbers.items() if k != v}
+    if renumbered:
+        pairs = ", ".join(f"{k}->{v}" for k, v in sorted(renumbered.items()))
+        click.echo(f"Label values renumbered to segment numbers: {pairs}.")
