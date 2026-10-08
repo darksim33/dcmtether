@@ -2,9 +2,10 @@
 
 Classification (PLAN.md §2):
 
-- ``supported``: one regular 3D stack (or a single slice) that Phase 2 can convert as is.
-- ``split``: several stacks in one series (distinct image planes, or several volumes at the
-  same positions); each part may be convertible once a splitting policy exists (Phase 4).
+- ``supported``: one regular 3D stack (or a single slice), or a 4D series of such stacks whose
+  volumes one attribute tells apart (:data:`VOLUME_KEYS`).
+- ``split``: several image planes in one series (e.g. localizers), each of them a supported
+  stack; converted as one NIfTI per plane (``chunk-<n>``).
 - ``unsupported``: cannot be converted without guessing or resampling.
 
 Reasons never contain element values that could identify a patient (no UIDs, names, dates,
@@ -40,6 +41,29 @@ UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset(
 ORIENTATION_TOL = 1e-4
 #: Positions (mm) closer than this are the same; also the allowed slice-spacing jitter.
 POSITION_TOL_MM = 0.01
+
+#: Attributes that may tell the volumes of a 4D series apart, in order of preference. The first
+#: whose values are distinct at every slice position, with the same set of values at every
+#: position, defines the volumes; if none does, the series is unsupported (no guessing).
+VOLUME_KEYS: tuple[tuple[str, ...], ...] = (
+    ("EchoNumbers",),
+    ("TemporalPositionIdentifier",),
+    ("DiffusionBValue", "DiffusionGradientOrientation"),
+    ("AcquisitionNumber",),
+    ("EchoTime",),
+    ("InversionTime",),
+    ("TriggerTime",),
+)
+_VOLUME_ATTRS = {
+    "EchoNumbers": "echo_number",
+    "TemporalPositionIdentifier": "temporal_position",
+    "DiffusionBValue": "diffusion_b_value",
+    "DiffusionGradientOrientation": "diffusion_gradient",
+    "AcquisitionNumber": "acquisition_number",
+    "EchoTime": "echo_time",
+    "InversionTime": "inversion_time",
+    "TriggerTime": "trigger_time",
+}
 
 
 class Status(StrEnum):
@@ -85,6 +109,31 @@ class Instance:
     spacing_between_slices: float | None
     rescale_slope: float | None
     rescale_intercept: float | None
+    # Candidates for telling the volumes of a 4D series apart (VOLUME_KEYS).
+    echo_number: int | None = None
+    echo_time: float | None = None
+    inversion_time: float | None = None
+    temporal_position: int | None = None
+    trigger_time: float | None = None
+    acquisition_number: int | None = None
+    diffusion_b_value: float | None = None
+    diffusion_gradient: tuple[float, ...] | None = None
+
+
+@dataclass
+class Part:
+    """The instances of one NIfTI: a 3D stack, or a 4D series of stacks at the same positions."""
+
+    #: Volume by volume; within a volume, slices ascending along the slice normal.
+    instances: list[Instance]
+    #: Per instance: ``(slice,)`` for 3D, ``(slice, volume)`` for 4D.
+    indices: list[tuple[int, ...]]
+    #: Keywords that tell the volumes apart (4D only).
+    volume_key: tuple[str, ...] = ()
+
+    @property
+    def n_volumes(self) -> int:
+        return 1 + max((index[1] for index in self.indices if len(index) > 1), default=0)
 
 
 @dataclass
@@ -94,6 +143,8 @@ class Series:
     status: Status = Status.SUPPORTED
     reasons: list[str] = field(default_factory=list)
     geometry: dict = field(default_factory=dict)
+    #: What to convert, one entry per NIfTI (chunk); empty if unsupported.
+    parts: list[Part] = field(default_factory=list)
 
     @property
     def first(self) -> Instance:
@@ -229,6 +280,14 @@ def _read_instance(path: Path) -> Instance | SkippedFile:
         spacing_between_slices=_float(ds, "SpacingBetweenSlices"),
         rescale_slope=_float(ds, "RescaleSlope"),
         rescale_intercept=_float(ds, "RescaleIntercept"),
+        echo_number=_int(ds, "EchoNumbers"),
+        echo_time=_float(ds, "EchoTime"),
+        inversion_time=_float(ds, "InversionTime"),
+        temporal_position=_int(ds, "TemporalPositionIdentifier"),
+        trigger_time=_float(ds, "TriggerTime"),
+        acquisition_number=_int(ds, "AcquisitionNumber"),
+        diffusion_b_value=_float(ds, "DiffusionBValue"),
+        diffusion_gradient=_floats(ds, "DiffusionGradientOrientation", 3),
     )
 
 
@@ -311,16 +370,6 @@ def _check_content(instances: list[Instance], findings: _Findings) -> None:
     if len(pixel_formats) > 1:
         findings.add(Status.UNSUPPORTED, f"mixed pixel formats ({len(pixel_formats)} distinct)")
 
-    rescale = {(i.rescale_slope, i.rescale_intercept) for i in instances}
-    if len(rescale) > 1:
-        findings.add(
-            Status.UNSUPPORTED,
-            f"rescale slope/intercept differ between instances ({len(rescale)} distinct)",
-        )
-    thickness = sorted({i.slice_thickness for i in instances if i.slice_thickness is not None})
-    if len(thickness) > 1:
-        findings.add(Status.UNSUPPORTED, f"mixed slice thickness ({_fmt(thickness)} mm)")
-
 
 def _plane_key_matches(a: Instance, b: Instance) -> bool:
     return (
@@ -354,55 +403,42 @@ def _cluster_positions(distances: np.ndarray) -> list[tuple[float, int]]:
     return [(float(np.mean(c)), len(c)) for c in clusters]
 
 
-def _analyze_stack(instances: list[Instance], findings: _Findings) -> dict:
-    """Geometry of one image plane group: positions, spacing, gaps, 4D layout."""
-    iop = np.asarray(instances[0].image_orientation)
-    row_dir, col_dir = iop[:3], iop[3:]
-    normal = np.cross(row_dir, col_dir)
-    geometry: dict = {
-        "orientation": [round(float(v), 6) for v in iop],
-        "rows": instances[0].rows,
-        "columns": instances[0].columns,
-        "pixel_spacing": list(instances[0].pixel_spacing),
-    }
-    if not np.isclose(np.linalg.norm(normal), 1.0, atol=1e-3) or not np.isclose(
-        row_dir.dot(col_dir), 0.0, atol=1e-3
-    ):
-        findings.add(Status.UNSUPPORTED, "ImageOrientationPatient is not orthonormal")
-        return geometry
+def _sortable(value: tuple) -> tuple:
+    return tuple((v is None, 0 if v is None else v) for v in value)
 
-    positions = np.asarray([i.image_position for i in instances])
-    distances = positions @ normal
-    in_plane = positions - np.outer(distances, normal)
-    if np.max(np.linalg.norm(in_plane - in_plane[0], axis=1)) > POSITION_TOL_MM:
-        findings.add(
-            Status.UNSUPPORTED, "slices are not stacked along the slice normal (sheared stack)"
-        )
 
-    clusters = _cluster_positions(distances)
-    counts = {c for _, c in clusters}
-    geometry["n_positions"] = len(clusters)
-    if counts != {1}:
-        if len(counts) == 1:
-            n_volumes = counts.pop()
-            geometry["n_volumes"] = n_volumes
-            findings.add(
-                Status.SPLIT,
-                f"{n_volumes} volumes at the same {len(clusters)} slice positions "
-                "(multi-echo/diffusion/dynamic)",
-            )
-        else:
-            findings.add(Status.UNSUPPORTED, "uneven number of instances per slice position")
+def _assign_volumes(
+    instances: list[Instance], slice_of: list[int]
+) -> tuple[tuple[str, ...], list[int]] | None:
+    """(volume key, volume index per instance) from the first key in VOLUME_KEYS that fits."""
+    by_position: dict[int, list[int]] = defaultdict(list)
+    for n, k in enumerate(slice_of):
+        by_position[k].append(n)
+    for key in VOLUME_KEYS:
+        values = [tuple(getattr(i, _VOLUME_ATTRS[kw]) for kw in key) for i in instances]
+        sets = [[values[n] for n in members] for members in by_position.values()]
+        if any(len(set(v)) != len(v) for v in sets) or any(set(v) != set(sets[0]) for v in sets):
+            continue
+        # Volumes in acquisition order (lowest InstanceNumber first), then by key value.
+        first_number: dict[tuple, float] = defaultdict(lambda: float("inf"))
+        for value, inst in zip(values, instances, strict=True):
+            if inst.instance_number is not None:
+                first_number[value] = min(first_number[value], inst.instance_number)
+        order = sorted(set(values), key=lambda v: (first_number[v], _sortable(v)))
+        volume = {value: n for n, value in enumerate(order)}
+        return key, [volume[v] for v in values]
+    return None
 
-    centres = np.asarray([p for p, _ in clusters])
+
+def _check_spacing(centres: np.ndarray, geometry: dict, findings: _Findings) -> None:
     if len(centres) < 2:
         geometry["slice_spacing"] = None
-        return geometry
+        return
     steps = np.diff(centres)
     median = float(np.median(steps))
     if np.max(np.abs(steps - median)) <= POSITION_TOL_MM:
         geometry["slice_spacing"] = round(float(np.mean(steps)), 6)
-        return geometry
+        return
 
     geometry["slice_spacing"] = None
     geometry["slice_spacing_range"] = [round(float(steps.min()), 6), round(float(steps.max()), 6)]
@@ -417,11 +453,94 @@ def _analyze_stack(instances: list[Instance], findings: _Findings) -> dict:
             Status.UNSUPPORTED,
             f"non-uniform slice spacing ({steps.min():.3g} to {steps.max():.3g} mm)",
         )
-    return geometry
+
+
+def _check_volume_content(
+    instances: list[Instance], volume_of: list[int], findings: _Findings
+) -> None:
+    """Rescale must be uniform within a volume (it may differ between volumes); one thickness."""
+    rescale: dict[int, set] = defaultdict(set)
+    for inst, v in zip(instances, volume_of, strict=True):
+        rescale[v].add((inst.rescale_slope, inst.rescale_intercept))
+    worst = max(len(pairs) for pairs in rescale.values())
+    if worst > 1:
+        findings.add(
+            Status.UNSUPPORTED,
+            f"rescale slope/intercept differ within a volume ({worst} distinct)",
+        )
+    thickness = sorted({i.slice_thickness for i in instances if i.slice_thickness is not None})
+    if len(thickness) > 1:
+        findings.add(Status.UNSUPPORTED, f"mixed slice thickness ({_fmt(thickness)} mm)")
+
+
+def _analyze_stack(instances: list[Instance], findings: _Findings) -> tuple[dict, Part | None]:
+    """Geometry of one image plane group: positions, spacing, gaps, 4D layout."""
+    iop = np.asarray(instances[0].image_orientation)
+    row_dir, col_dir = iop[:3], iop[3:]
+    normal = np.cross(row_dir, col_dir)
+    geometry: dict = {
+        "orientation": [round(float(v), 6) for v in iop],
+        "rows": instances[0].rows,
+        "columns": instances[0].columns,
+        "pixel_spacing": list(instances[0].pixel_spacing),
+    }
+    if not np.isclose(np.linalg.norm(normal), 1.0, atol=1e-3) or not np.isclose(
+        row_dir.dot(col_dir), 0.0, atol=1e-3
+    ):
+        findings.add(Status.UNSUPPORTED, "ImageOrientationPatient is not orthonormal")
+        return geometry, None
+
+    positions = np.asarray([i.image_position for i in instances])
+    distances = positions @ normal
+    in_plane = positions - np.outer(distances, normal)
+    if np.max(np.linalg.norm(in_plane - in_plane[0], axis=1)) > POSITION_TOL_MM:
+        findings.add(
+            Status.UNSUPPORTED, "slices are not stacked along the slice normal (sheared stack)"
+        )
+
+    clusters = _cluster_positions(distances)
+    centres = np.asarray([p for p, _ in clusters])
+    slice_of = [int(np.argmin(np.abs(centres - d))) for d in distances]
+    counts = {c for _, c in clusters}
+    geometry["n_positions"] = len(clusters)
+    volume_key: tuple[str, ...] = ()
+    volume_of = [0] * len(instances)
+    if counts != {1}:
+        if len(counts) == 1:
+            n_volumes = counts.pop()
+            geometry["n_volumes"] = n_volumes
+            assigned = _assign_volumes(instances, slice_of)
+            if assigned is None:
+                findings.add(
+                    Status.UNSUPPORTED,
+                    f"{n_volumes} volumes at the same {len(clusters)} slice positions, "
+                    "but no attribute tells them apart",
+                )
+            else:
+                volume_key, volume_of = assigned
+                geometry["volume_key"] = list(volume_key)
+        else:
+            findings.add(Status.UNSUPPORTED, "uneven number of instances per slice position")
+
+    _check_volume_content(instances, volume_of, findings)
+    _check_spacing(centres, geometry, findings)
+
+    order = sorted(range(len(instances)), key=lambda n: (volume_of[n], slice_of[n]))
+    part = Part(
+        instances=[instances[n] for n in order],
+        indices=[(slice_of[n], volume_of[n]) if volume_key else (slice_of[n],) for n in order],
+        volume_key=volume_key,
+    )
+    return geometry, part
+
+
+def _plane_order(plane: list[Instance]) -> tuple:
+    numbers = [i.instance_number for i in plane if i.instance_number is not None]
+    return (min(numbers) if numbers else float("inf"), min(i.path for i in plane))
 
 
 def classify(series: Series) -> None:
-    """Set ``status``, ``reasons`` and ``geometry`` on ``series``."""
+    """Set ``status``, ``reasons``, ``geometry`` and ``parts`` on ``series``."""
     findings = _Findings()
     instances = series.instances
     _check_consistency(instances, findings)
@@ -442,26 +561,39 @@ def classify(series: Series) -> None:
     image_storage = {i.sop_class_uid for i in instances} <= SUPPORTED_SOP_CLASSES and all(
         i.number_of_frames == 1 for i in instances
     )
+    parts: list[Part] = []
     if not image_storage:
         pass  # geometry lives elsewhere (functional groups) or does not exist; already rejected
     elif missing:
         findings.add(Status.UNSUPPORTED, f"missing or invalid {', '.join(missing)}")
     else:
-        planes = _group_planes(instances)
+        planes = sorted(_group_planes(instances), key=_plane_order)
         geometry["n_planes"] = len(planes)
         if len(planes) > 1:
             findings.add(
                 Status.SPLIT,
                 f"{len(planes)} distinct image planes (orientation, matrix or pixel spacing)",
             )
+        part_geometry = []
+        for n, plane in enumerate(planes, start=1):
+            plane_findings = _Findings()
+            plane_geometry, part = _analyze_stack(plane, plane_findings)
+            for status, reason in plane_findings.items:
+                findings.add(status, reason if len(planes) == 1 else f"plane {n}: {reason}")
+            part_geometry.append(plane_geometry)
+            if part is not None:
+                parts.append(part)
+        if len(planes) == 1:
+            geometry.update(part_geometry[0])
         else:
-            geometry.update(_analyze_stack(instances, findings))
+            geometry["parts"] = part_geometry
     for attr in ("slice_thickness", "spacing_between_slices"):
         geometry[attr] = sorted({v for i in instances if (v := getattr(i, attr)) is not None})
 
     series.status = findings.status
     series.reasons = [reason for _, reason in findings.items]
     series.geometry = geometry
+    series.parts = parts if series.status is not Status.UNSUPPORTED else []
 
 
 # --- scanning --------------------------------------------------------------------------------
