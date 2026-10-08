@@ -19,7 +19,9 @@ from pydicom.valuerep import DS, IS, PN_DELIMS, TEXT_VR_DELIMS
 from dcmtether import __version__
 from dcmtether._quiet import quiet_pydicom
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
+#: v2 documents (no multi-frame ``frames``) are a subset of v3 and still readable.
+READABLE_VERSIONS = (2, 3)
 TETHER_SUFFIX = ".tether.json"
 
 #: Never stored in tether.json: the voxels live in the NIfTI.
@@ -210,9 +212,11 @@ def _native_pixel_data_vr(ds: pydicom.Dataset) -> str:
     return ds["PixelData"].VR
 
 
-def _instance(index, name, file_meta, elements, strings, ds) -> dict:
+def _instance(layout, name, file_meta, elements, strings, ds) -> dict:
+    if not isinstance(layout, dict):  # a plain index (classic instance)
+        layout = {"index": list(layout)}
     entry = {
-        "index": list(index),
+        **layout,
         "file_name": name,
         "file_meta": file_meta,
         "elements": elements,
@@ -227,13 +231,18 @@ def _instance(index, name, file_meta, elements, strings, ds) -> dict:
 def build(
     datasets: Sequence[pydicom.Dataset],
     file_names: Sequence[str],
-    indices: Sequence[Sequence[int]],
+    layouts: Sequence[dict | Sequence[int]],
     dtype: np.dtype,
     shape_dicom: Sequence[int],
     ornt: np.ndarray,
     strings: Sequence[Strings],
 ) -> dict:
-    """Build the tether document; ``datasets`` and ``strings`` in the order of ``indices``."""
+    """Build the tether document: one entry per file (``datasets``, ``strings``, ``layouts``).
+
+    A layout is ``{"index": [slice(, volume)]}`` for a classic instance or
+    ``{"frames": [[slice(, volume)], ...]}`` (one per frame, frame order) for a multi-frame
+    instance; a plain index is shorthand for the first.
+    """
     first = datasets[0]
     meta_shared, meta_rest = split_shared([_to_json(ds.file_meta) for ds in datasets])
     shared, shared_strings, rest, rest_strings = _split_with_strings(
@@ -254,7 +263,7 @@ def build(
         "instances": [
             _instance(*entry)
             for entry in zip(
-                indices, file_names, meta_rest, rest, rest_strings, datasets, strict=True
+                layouts, file_names, meta_rest, rest, rest_strings, datasets, strict=True
             )
         ],
         "pixel": {
@@ -283,7 +292,7 @@ def load(path: Path) -> dict:
     if not isinstance(document, dict) or "format_version" not in document:
         raise TetherError("not a tether document")
     version = document["format_version"]
-    if version != FORMAT_VERSION:
+    if version not in READABLE_VERSIONS:
         raise TetherError(
             f"tether format version {version} is not supported (expected {FORMAT_VERSION}); "
             "re-run to-nii"
