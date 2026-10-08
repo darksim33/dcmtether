@@ -7,6 +7,8 @@ import click
 
 from dcmtether import __version__
 from dcmtether.compare import compare_series, dicom_files
+from dcmtether.derived_mr import DerivedMRError, to_derived_mr
+from dcmtether.derived_mr import load_metadata as load_derived_metadata
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import ManifestError, manifest_path, write_manifest
 from dcmtether.pmap import PmapError, to_pmap
@@ -178,3 +180,24 @@ def to_pmap_command(nifti: Path, map_nifti: Path, metadata: Path, output: Path) 
         f"Wrote DICOM Parametric Map ({result.dtype}) on "
         f"{plural(result.n_sources, 'source image')}."
     )
+
+
+@main.command("to-mr")
+@click.argument("nifti", type=_existing_file)
+@click.argument("derivative", type=_existing_file)
+@click.argument("metadata", type=_existing_file)
+@click.argument("output", type=_output_dir)
+def to_mr_command(nifti: Path, derivative: Path, metadata: Path, output: Path) -> None:
+    """Write DERIVATIVE as derived MR images (one per source slice) into OUTPUT.
+
+    Fallback for PACS without SEG/Parametric Map support. DERIVATIVE lies on the grid of
+    NIFTI; METADATA is a dcmqi SEG template (label map: label values as pixels) or parametric
+    map template (map: float maps are quantised to 16 bits). Research use only.
+    """
+    try:
+        result = to_derived_mr(nifti, derivative, load_derived_metadata(metadata), output)
+    except DerivedMRError as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(f"Wrote {plural(len(result.paths), 'derived MR image')} ({result.kind}).")
+    if result.max_error > 0:
+        click.echo(f"Quantized to 16 bits: max error {result.max_error:.3g} (to-pmap is exact).")
