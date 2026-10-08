@@ -3,7 +3,8 @@
 Classification (PLAN.md §2):
 
 - ``supported``: one regular 3D stack (or a single slice), or a 4D series of such stacks whose
-  volumes one attribute tells apart (:data:`VOLUME_KEYS`).
+  volumes one attribute tells apart (:data:`VOLUME_KEYS`). Enhanced MR is classified frame by
+  frame: every frame is one image (:mod:`dcmtether.frames`).
 - ``split``: several image planes in one series (e.g. localizers), each of them a supported
   stack; converted as one NIfTI per plane (``chunk-<n>``).
 - ``unsupported``: cannot be converted without guessing or resampling (incl. lossy
@@ -26,6 +27,7 @@ from pydicom.errors import InvalidDicomError
 from pydicom.uid import (
     JPEG2000,
     UID,
+    EnhancedMRImageStorage,
     ExplicitVRBigEndian,
     ExplicitVRLittleEndian,
     ImplicitVRLittleEndian,
@@ -40,9 +42,12 @@ from pydicom.uid import (
     RLELossless,
 )
 
+from dcmtether import frames
 from dcmtether._quiet import quiet_pydicom
 
-SUPPORTED_SOP_CLASSES = frozenset({MRImageStorage})
+#: Enhanced MR: one image per frame, geometry from functional groups (Phase 4c).
+MULTI_FRAME_SOP_CLASSES = frozenset({EnhancedMRImageStorage})
+SUPPORTED_SOP_CLASSES = frozenset({MRImageStorage}) | MULTI_FRAME_SOP_CLASSES
 UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset(
     {ImplicitVRLittleEndian, ExplicitVRLittleEndian, ExplicitVRBigEndian}
 )
@@ -63,12 +68,16 @@ POSITION_TOL_MM = 0.01
 
 #: Attributes that may tell the volumes of a 4D series apart, in order of preference. The first
 #: whose values are distinct at every slice position, with the same set of values at every
-#: position, defines the volumes; if none does, the series is unsupported (no guessing).
+#: position, defines the volumes. Last resort: all candidates that vary, combined (e.g. time
+#: point x echo). If that does not fit either, the series is unsupported (no guessing).
 VOLUME_KEYS: tuple[tuple[str, ...], ...] = (
     ("EchoNumbers",),
     ("TemporalPositionIdentifier",),
     ("DiffusionBValue", "DiffusionGradientOrientation"),
+    ("TemporalPositionIndex",),
     ("AcquisitionNumber",),
+    ("EffectiveEchoTime",),
+    ("ComplexImageComponent",),
     ("EchoTime",),
     ("InversionTime",),
     ("TriggerTime",),
@@ -78,7 +87,10 @@ _VOLUME_ATTRS = {
     "TemporalPositionIdentifier": "temporal_position",
     "DiffusionBValue": "diffusion_b_value",
     "DiffusionGradientOrientation": "diffusion_gradient",
+    "TemporalPositionIndex": "temporal_position_index",
     "AcquisitionNumber": "acquisition_number",
+    "EffectiveEchoTime": "effective_echo_time",
+    "ComplexImageComponent": "complex_image_component",
     "EchoTime": "echo_time",
     "InversionTime": "inversion_time",
     "TriggerTime": "trigger_time",
@@ -93,7 +105,11 @@ class Status(StrEnum):
 
 @dataclass(frozen=True)
 class Instance:
-    """Header fields of one DICOM file that scanning and later phases need."""
+    """Header fields of one image that scanning and later phases need.
+
+    One per file for classic instances; one per frame (``frame`` = 0-based index) for
+    multi-frame instances, with per-frame values from the functional groups.
+    """
 
     path: Path
     series_instance_uid: str
@@ -137,6 +153,11 @@ class Instance:
     acquisition_number: int | None = None
     diffusion_b_value: float | None = None
     diffusion_gradient: tuple[float, ...] | None = None
+    temporal_position_index: int | None = None
+    effective_echo_time: float | None = None
+    complex_image_component: str | None = None
+    #: 0-based frame number in a multi-frame instance; ``None`` for classic instances.
+    frame: int | None = None
 
 
 @dataclass
@@ -169,6 +190,11 @@ class Series:
     def first(self) -> Instance:
         return self.instances[0]
 
+    @property
+    def files(self) -> list[Path]:
+        """The series' files (several images may come from one multi-frame file)."""
+        return sorted({i.path for i in self.instances})
+
 
 @dataclass
 class SkippedFile:
@@ -184,7 +210,7 @@ class ScanResult:
 
     @property
     def n_files(self) -> int:
-        return sum(len(s.instances) for s in self.series) + len(self.skipped)
+        return sum(len(s.files) for s in self.series) + len(self.skipped)
 
 
 # --- reading ---------------------------------------------------------------------------------
@@ -228,14 +254,14 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
-def read_instance(path: Path) -> Instance | SkippedFile:
-    """Read the header of one file; never reads pixel data.
+def read_instances(path: Path) -> list[Instance] | SkippedFile:
+    """Read the header of one file (one Instance per frame); never reads pixel data.
 
     pydicom value-validation warnings are suppressed: they quote element values (names, IDs,
     UIDs), which must not reach the console or logs. Invalid values are kept as read.
     """
     with quiet_pydicom():
-        return _read_instance(path)
+        return _read_instances(path)
 
 
 def _classify_non_part10(path: Path) -> str:
@@ -249,7 +275,7 @@ def _classify_non_part10(path: Path) -> str:
     return "not a DICOM file"
 
 
-def _read_instance(path: Path) -> Instance | SkippedFile:
+def _read_instances(path: Path) -> list[Instance] | SkippedFile:
     try:
         ds = pydicom.dcmread(path, stop_before_pixels=True, defer_size="4 KB")
     except InvalidDicomError:
@@ -265,7 +291,7 @@ def _read_instance(path: Path) -> Instance | SkippedFile:
     image_type = ds.get("ImageType") or ()
     if isinstance(image_type, str):
         image_type = (image_type,)
-    return Instance(
+    common = dict(
         path=path,
         series_instance_uid=series_uid,
         study_instance_uid=_str(ds, "StudyInstanceUID"),
@@ -292,22 +318,33 @@ def _read_instance(path: Path) -> Instance | SkippedFile:
         pixel_representation=_int(ds, "PixelRepresentation"),
         rows=_int(ds, "Rows"),
         columns=_int(ds, "Columns"),
-        image_position=_floats(ds, "ImagePositionPatient", 3),
-        image_orientation=_floats(ds, "ImageOrientationPatient", 6),
-        pixel_spacing=_floats(ds, "PixelSpacing", 2),
-        slice_thickness=_float(ds, "SliceThickness"),
-        spacing_between_slices=_float(ds, "SpacingBetweenSlices"),
-        rescale_slope=_float(ds, "RescaleSlope"),
-        rescale_intercept=_float(ds, "RescaleIntercept"),
-        echo_number=_int(ds, "EchoNumbers"),
-        echo_time=_float(ds, "EchoTime"),
-        inversion_time=_float(ds, "InversionTime"),
-        temporal_position=_int(ds, "TemporalPositionIdentifier"),
-        trigger_time=_float(ds, "TriggerTime"),
-        acquisition_number=_int(ds, "AcquisitionNumber"),
-        diffusion_b_value=_float(ds, "DiffusionBValue"),
-        diffusion_gradient=_floats(ds, "DiffusionGradientOrientation", 3),
     )
+    multi_frame = frames.has_functional_groups(ds) or "NumberOfFrames" in ds
+    return [
+        Instance(
+            **common,
+            image_position=_floats(view, "ImagePositionPatient", 3),
+            image_orientation=_floats(view, "ImageOrientationPatient", 6),
+            pixel_spacing=_floats(view, "PixelSpacing", 2),
+            slice_thickness=_float(view, "SliceThickness"),
+            spacing_between_slices=_float(view, "SpacingBetweenSlices"),
+            rescale_slope=_float(view, "RescaleSlope"),
+            rescale_intercept=_float(view, "RescaleIntercept"),
+            echo_number=_int(view, "EchoNumbers"),
+            echo_time=_float(view, "EchoTime"),
+            inversion_time=_float(view, "InversionTime"),
+            temporal_position=_int(view, "TemporalPositionIdentifier"),
+            trigger_time=_float(view, "TriggerTime"),
+            acquisition_number=_int(view, "AcquisitionNumber"),
+            diffusion_b_value=_float(view, "DiffusionBValue"),
+            diffusion_gradient=_floats(view, "DiffusionGradientOrientation", 3),
+            temporal_position_index=_int(view, "TemporalPositionIndex"),
+            effective_echo_time=_float(view, "EffectiveEchoTime"),
+            complex_image_component=_str(view, "ComplexImageComponent"),
+            frame=n if multi_frame else None,
+        )
+        for n, view in enumerate(frames.frame_views(ds))
+    ]
 
 
 # --- classification --------------------------------------------------------------------------
@@ -341,6 +378,13 @@ def _fmt(values: Iterable[float]) -> str:
     return ", ".join(f"{v:g}" for v in values)
 
 
+def _one_per_file(instances: list[Instance]) -> list[Instance]:
+    seen: dict[Path, Instance] = {}
+    for inst in instances:
+        seen.setdefault(inst.path, inst)
+    return list(seen.values())
+
+
 def _check_consistency(instances: list[Instance], findings: _Findings) -> None:
     for attr, label in [
         ("sop_class_uid", "SOP classes"),
@@ -353,7 +397,7 @@ def _check_consistency(instances: list[Instance], findings: _Findings) -> None:
         if n > 1:
             findings.add(Status.UNSUPPORTED, f"mixed {label} ({n} distinct)")
 
-    sop_uids = Counter(i.sop_instance_uid for i in instances)
+    sop_uids = Counter(i.sop_instance_uid for i in _one_per_file(instances))
     if None in sop_uids:
         findings.add(Status.UNSUPPORTED, "instances without SOPInstanceUID")
     duplicates = sum(c - 1 for uid, c in sop_uids.items() if uid is not None and c > 1)
@@ -378,7 +422,11 @@ def _check_content(instances: list[Instance], findings: _Findings) -> None:
     if other:
         names = sorted(_uid_name(u) for u in other)
         findings.add(Status.UNSUPPORTED, f"transfer syntax not supported: {', '.join(names)}")
-    if any(i.number_of_frames > 1 for i in instances):
+    if any(
+        i.number_of_frames > 1 or i.frame is not None
+        for i in instances
+        if i.sop_class_uid not in MULTI_FRAME_SOP_CLASSES
+    ):
         findings.add(Status.UNSUPPORTED, "multi-frame instances")
     if any("MOSAIC" in i.image_type for i in instances):
         findings.add(Status.UNSUPPORTED, "Siemens mosaic images")
@@ -434,21 +482,36 @@ def _sortable(value: tuple) -> tuple:
 def _assign_volumes(
     instances: list[Instance], slice_of: list[int]
 ) -> tuple[tuple[str, ...], list[int]] | None:
-    """(volume key, volume index per instance) from the first key in VOLUME_KEYS that fits."""
+    """(volume key, volume index per image) from the first key in VOLUME_KEYS that fits."""
     by_position: dict[int, list[int]] = defaultdict(list)
     for n, k in enumerate(slice_of):
         by_position[k].append(n)
-    for key in VOLUME_KEYS:
-        values = [tuple(getattr(i, _VOLUME_ATTRS[kw]) for kw in key) for i in instances]
+
+    def values_of(key: tuple[str, ...]) -> list[tuple]:
+        return [tuple(getattr(i, _VOLUME_ATTRS[kw]) for kw in key) for i in instances]
+
+    def fits(values: list[tuple]) -> bool:
         sets = [[values[n] for n in members] for members in by_position.values()]
-        if any(len(set(v)) != len(v) for v in sets) or any(set(v) != set(sets[0]) for v in sets):
+        return all(len(set(v)) == len(v) for v in sets) and all(
+            set(v) == set(sets[0]) for v in sets
+        )
+
+    varying = tuple(kw for kw in _VOLUME_ATTRS if len(set(values_of((kw,)))) > 1)
+    for key in (*VOLUME_KEYS, varying):
+        if not key:
             continue
-        # Volumes in acquisition order (lowest InstanceNumber first), then by key value.
-        first_number: dict[tuple, float] = defaultdict(lambda: float("inf"))
+        values = values_of(key)
+        if not fits(values):
+            continue
+        # Volumes in acquisition order (lowest InstanceNumber, then frame), then by key value.
+        first_seen: dict[tuple, tuple] = {}
         for value, inst in zip(values, instances, strict=True):
-            if inst.instance_number is not None:
-                first_number[value] = min(first_number[value], inst.instance_number)
-        order = sorted(set(values), key=lambda v: (first_number[v], _sortable(v)))
+            seen = (
+                float("inf") if inst.instance_number is None else inst.instance_number,
+                -1 if inst.frame is None else inst.frame,
+            )
+            first_seen[value] = min(first_seen.get(value, seen), seen)
+        order = sorted(set(values), key=lambda v: (first_seen[v], _sortable(v)))
         volume = {value: n for n, value in enumerate(order)}
         return key, [volume[v] for v in values]
     return None
@@ -560,7 +623,8 @@ def _analyze_stack(instances: list[Instance], findings: _Findings) -> tuple[dict
 
 def _plane_order(plane: list[Instance]) -> tuple:
     numbers = [i.instance_number for i in plane if i.instance_number is not None]
-    return (min(numbers) if numbers else float("inf"), min(i.path for i in plane))
+    first_frame = min(-1 if i.frame is None else i.frame for i in plane)
+    return (min(numbers) if numbers else float("inf"), min(i.path for i in plane), first_frame)
 
 
 def classify(series: Series) -> None:
@@ -570,7 +634,9 @@ def classify(series: Series) -> None:
     _check_consistency(instances, findings)
     _check_content(instances, findings)
 
-    geometry: dict = {"n_instances": len(instances)}
+    geometry: dict = {"n_instances": len(series.files)}
+    if any(i.frame is not None for i in instances):
+        geometry["n_frames"] = len(instances)
     missing = [
         label
         for attr, label in [
@@ -583,7 +649,7 @@ def classify(series: Series) -> None:
         if any(getattr(i, attr) is None for i in instances)
     ]
     image_storage = {i.sop_class_uid for i in instances} <= SUPPORTED_SOP_CLASSES and all(
-        i.number_of_frames == 1 for i in instances
+        i.frame is None or i.sop_class_uid in MULTI_FRAME_SOP_CLASSES for i in instances
     )
     parts: list[Part] = []
     if not image_storage:
@@ -641,15 +707,15 @@ def scan(root: Path, exclude: Path | None = None) -> ScanResult:
     by_series: dict[str, list[Instance]] = defaultdict(list)
     skipped: list[SkippedFile] = []
     for path in _walk(root, exclude):
-        result = read_instance(path)
+        result = read_instances(path)
         if isinstance(result, SkippedFile):
             skipped.append(result)
         else:
-            by_series[result.series_instance_uid].append(result)
+            by_series[result[0].series_instance_uid].extend(result)
 
     series = []
     for uid, instances in by_series.items():
-        s = Series(uid, sorted(instances, key=lambda i: i.path))
+        s = Series(uid, sorted(instances, key=lambda i: (i.path, i.frame or 0)))
         classify(s)
         series.append(s)
     series.sort(key=lambda s: (s.first.path.parent, s.first.series_number or 0, s.first.path))
