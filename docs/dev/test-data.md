@@ -49,13 +49,13 @@ Only their `In/` folders (the DICOM input) are pinned, per commit, with every fi
 SHA-1; `tests/dcmqa.py` downloads on demand into `.cache/dcm_qa/` (about 113 MB on the first run)
 and unpacks `.gz` files. Re-pin or add repositories with `uv run python scripts/pin_dcm_qa.py`.
 
-Classification on 2026-10-08 (Phase 4a); `tests/test_dcmqa.py` round-trips every converted
+Classification on 2026-10-08 (Phase 4a; enhanced row updated in 4c); `tests/test_dcmqa.py` round-trips every converted
 series and pins the converted count per repository:
 
 | Repository | Content | Series | Converted | Not converted because |
 |---|---|---|---|---|
 | `dcm_qa_12bit` | Siemens 12-bit fMRI | 1 | 0 | mosaic |
-| `dcm_qa_enh` | Canon/Philips/Siemens enhanced MR | 5 | 0 | enhanced multi-frame (Phase 4c) |
+| `dcm_qa_enh` | Canon/Philips/Siemens enhanced MR | 5 | 5 (Phase 4c: DTI, magnitude/phase, 2 echoes, fMRI time × echo, multi-file) | |
 | `dcm_qa_me` | Siemens multi-echo GRE fieldmaps, fMRI | 3 | 2 (one 4D by EchoNumbers) | mosaic |
 | `dcm_qa_nih` | GE + Siemens fMRI | 8 | 0 | GE: volumes differ only by InstanceNumber; Siemens: mosaic |
 | `dcm_qa_pdt2` | Siemens dual-echo PD/T2 | 1 | 1 (4D by EchoNumbers) | |

@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phases 0–3, 4a and 4b done; next: Phase 4c (enhanced multi-frame MR). This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–4 done (4a/4b/4c); next: Phase 5 (derivatives). This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -37,7 +37,8 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | Identity (compare) | Instances paired by SOPInstanceUID. Non-sequence elements: same VR **and same encoded value bytes**; sequences compared item by item; PixelData: equal **decoded arrays** (raw byte differences are reported as notes only). Not compared: defined/undefined lengths, element order, preamble, file meta group length. Reports never contain values, UIDs or file names. |
 | Human metadata | Separate BIDS-style `*.json` sidecar (keyword: value) — readable, not used for recovery. |
 | Naming | BIDS-inspired key-value filenames with custom entities, always including the series number: `sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz`, folder `sub-…/ses-…/anat/`. **No body-part entity** (decided 2026-10-07; BodyPartExamined stays in manifest and sidecar). `acq-` = **ProtocolName**, else SeriesDescription (changed 2026-10-08: ProtocolName is filled more consistently, e.g. Philips without description, and carries no reconstruction suffixes; it is Type 3, so the fallback stays), reduced to letters/digits, camelCase, ≤24 chars; source recorded in the sidecar (`DcmTether.AcqSource`). Already converted series keep their old names (re-runs skip them). Suffix `T1w`/`T2w`/`PDw`/`FLAIR` from keywords in the same text (T2* excluded), else TR/TE/TI rules, else `MR`; rule recorded in the sidecar. Diffusion series: suffix `dwi`, folder `dwi/`. Multi-plane series: `chunk-<n>` entity after `ser-` (decided 2026-10-08). |
-| 4D series | **One 4D NIfTI per series** (decided 2026-10-08), instances indexed `[slice, volume]`. Volumes are told apart by the first attribute in `scan.VOLUME_KEYS` (EchoNumbers, TemporalPositionIdentifier, DiffusionBValue + GradientOrientation, AcquisitionNumber, EchoTime, InversionTime, TriggerTime) whose values are distinct at every slice position, with the same set at every position; otherwise `unsupported` (never guessed). Volumes are ordered by acquisition (lowest InstanceNumber), then by key value. |
+| 4D series | **One 4D NIfTI per series** (decided 2026-10-08), instances indexed `[slice, volume]`. Volumes are told apart by the first attribute in `scan.VOLUME_KEYS` (EchoNumbers, TemporalPositionIdentifier, DiffusionBValue + GradientOrientation, TemporalPositionIndex, AcquisitionNumber, EffectiveEchoTime, ComplexImageComponent, EchoTime, InversionTime, TriggerTime) whose values are distinct at every slice position, with the same set at every position; last resort (4c): all candidates that vary, combined (e.g. time point × echo); otherwise `unsupported` (never guessed). Volumes are ordered by acquisition (lowest InstanceNumber, then frame), then by key value. |
+| Enhanced MR | (Phase 4c, decided 2026-10-08) Enhanced MR Image Storage is classified **frame by frame**: each frame is one image whose geometry, rescale and echo/time/diffusion values come from a *frame view* (top-level elements + shared functional groups + that frame's per-frame groups, `dcmtether.frames`), so 3D/4D/split rules apply unchanged; one series may span several enhanced files. tether.json keeps the functional groups as they are (no restructuring) and lists per file `frames: [[slice(, volume)], …]` in frame order (format v3; v2 files stay readable). Multi-frame classic MR and Legacy Converted Enhanced MR stay `unsupported`. |
 | Split series | Several image planes in one series (localizers) → one NIfTI per plane (`chunk-<n>`, InstanceNumber order) if **every** plane is a supported stack; otherwise the whole series is `unsupported`. |
 | Compressed TS | (Phase 4b, decided 2026-10-08) Lossless syntaxes only: RLE Lossless, JPEG Lossless (Process 14, incl. SV1), JPEG-LS Lossless, JPEG 2000 Lossless (`scan.LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES`), decoded with `pylibjpeg` (+ libjpeg/openjpeg/rle plugins, runtime dependencies). `to-dcm` writes **Explicit VR Little Endian** with native PixelData (OW, OB for 8-bit); tether.json keeps the source TS. `compare` reports exactly this change as a note ("changed from … (lossless)"), not a difference; all elements and decoded pixels must still match; any other TS change is a difference. Lossy (JPEG baseline/extended, JPEG-LS near-lossless, JPEG 2000) stays `unsupported` with its own reason (decoders may differ). |
 | Collisions | Never silent. Existing target → error (or explicit suffix + log). Manifest enforces uniqueness on SeriesInstanceUID. |
@@ -74,7 +75,7 @@ Derivatives later go under `dataset/derivatives/<tool-name>/…` mirroring the s
 
 ```json
 {
-  "format_version": 2,
+  "format_version": 3,
   "tool": { "name": "dcmtether", "version": "0.1.0" },
   "source": {
     "series_instance_uid": "…",
@@ -112,7 +113,7 @@ Notes:
 - `pixel.orientation.from = dicom_rows_columns_slices`: array axes (row index, column index, slice), slices sorted by ascending position along `cross(row_dir, col_dir)` (not acquisition order).
 - `file_name` is the source path relative to the series' source directory (POSIX).
 - `index` is in DICOM volume order (`shape_dicom`), not NIfTI order. It is a list so 4D series fit: `[slice]` for 3D, `[slice, volume]` for multi-echo / DWI / dynamics.
-- Enhanced multi-frame: one instance with N frames; per-frame functional groups stay in `elements` (format may get a `frames` block in Phase 4).
+- Enhanced multi-frame (format v3): an instance has `"frames": [[slice, volume], …]` (one index per frame, frame order) instead of `"index"`; functional groups stay in `elements` unchanged.
 - PixelData (7FE0,0010) is never stored here.
 - An element appears in `shared` only if every instance has it with an equal value.
 - `original_strings` (top level = shared, and per instance): element path → original strings, one
@@ -122,7 +123,7 @@ Notes:
 - `pixel_data_vr`: PixelData is not in the JSON, so its VR (OB/OW) is recorded here.
 - `pixel_data_trailing`: bytes stored after the last pixel (e.g. `MR_small_padded.dcm` has 128),
   other than the normal single pad byte.
-- Format version 2 since Phase 3; `to-dcm` refuses other versions ("re-run to-nii").
+- Format version 3 since Phase 4c (adds `frames`); version 2 documents are still read; `to-dcm` refuses other versions ("re-run to-nii").
 
 ---
 
@@ -238,6 +239,15 @@ Outcome and decisions:
 - `pixel_data_trailing` does not apply to encapsulated data; `pixel_data_vr` is now the VR of the native PixelData to write.
 - `to-dcm` prints the transfer syntax change; `compare` prints each kind of note once with an instance count.
 - Not supported (no test data): Deflated Explicit VR LE, HTJ2K. pydicom's `compress()`/`decompress()` create new SOPInstanceUIDs by default; tests pass `generate_instance_uid=False` (the product never uses them).
+
+**Status 4c: ✅ done (2026-10-08, branch `phase-4c-enhanced`, stacked on `phase-4b-compressed`).** Format + lint clean, 487 tests pass, none skipped.
+Outcome and decisions:
+- Real data (dcm_qa_enh) converts and round-trips identically (no differences, no notes): Canon DTI (520 frames, 13 volumes by b-value/gradient), Philips T1 (magnitude/phase by ComplexImageComponent, per-volume rescale), Philips field map (2 echoes), Philips fMRI (4 time points × 2 echoes by the combined key), Siemens XA10 (4 files × 6 frames, time points by TemporalPositionIndex). Rebuilt Siemens files give the same dicom-validator errors as the originals.
+- Synthetic Enhanced MR (`synthetic.make_enhanced`, 1 or several files) passes world-space ground truth and round trips for 3D and all 4D kinds, per-volume rescale, and RLE compression.
+- `scan.read_instances` returns one `Instance` per frame (`frame` = index); counts in the scan output and manifest (`n_instances`, `instances` rows) stay per file.
+- The combined key lists every varying candidate (for Philips fMRI five keywords incl. redundant ones); fine for assignment, verbose in `DcmTether.VolumeKey`.
+- Sidecar: EchoTime falls back to EffectiveEchoTime (enhanced).
+- Philips DWI enhanced (`dcm_qa_philips_dwi/In/enh`) stays unsupported: its series mixes presentation states and raw data with the images.
 
 ### Phase 5 — Derivatives
 - Label-map metadata JSON (segment number → label, SNOMED CT category/type codes, color, algorithm info).
