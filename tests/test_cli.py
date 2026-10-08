@@ -9,7 +9,7 @@ from synthetic import SeriesSpec, make_localizer, make_series, write_series
 from dcmtether import __version__
 from dcmtether.cli import main
 
-COMMANDS = ["scan", "to-nii", "to-dcm", "compare", "to-seg", "to-pmap"]
+COMMANDS = ["scan", "to-nii", "to-dcm", "compare", "to-seg", "to-pmap", "to-mr"]
 
 
 @pytest.fixture
