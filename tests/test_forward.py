@@ -360,6 +360,48 @@ def _patient(seed, name, pid, date="20260101", time="120000", study=None, number
     return s
 
 
+# --- acq- source: ProtocolName, else SeriesDescription -----------------------------------------
+
+
+def _named_series(protocol: str | None, description: str) -> SyntheticSeries:
+    extra = {} if protocol is None else {"ProtocolName": protocol}
+    return make_series(SeriesSpec(series_description=description, extra=extra))
+
+
+def _converted_stem_and_sidecar(tmp_path, series) -> tuple[str, dict]:
+    dataset = _dataset(tmp_path, series)
+    assert all(o.ok for o in convert_dataset(dataset))
+    [row] = output_rows(dataset)
+    sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
+    return Path(row["nifti_path"]).name.removesuffix(".nii.gz"), sidecar
+
+
+def test_acq_uses_protocol_name(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(
+        tmp_path, _named_series("sag PD fs", "sag PD fs_ND")
+    )
+    assert stem == "sub-SynthPhant_ses-20260101_acq-sagPDFs_ser-01_PDw"
+    assert sidecar["DcmTether"]["AcqSource"] == "ProtocolName"
+    assert sidecar["DcmTether"]["SuffixRule"] == "keyword:pdw"
+
+
+def test_suffix_keywords_come_from_the_protocol_name(tmp_path):
+    stem, _ = _converted_stem_and_sidecar(tmp_path, _named_series("t2_tse", "t1 something"))
+    assert stem.endswith("_acq-t2Tse_ser-01_T2w")
+
+
+def test_acq_falls_back_to_series_description(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, make_series())
+    assert stem == DEFAULT_STEM
+    assert sidecar["DcmTether"]["AcqSource"] == "SeriesDescription"
+
+
+def test_no_acq_without_protocol_and_description(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series(None, ""))
+    assert stem == "sub-SynthPhant_ses-20260101_ser-01_T1w"
+    assert "AcqSource" not in sidecar["DcmTether"]
+
+
 def test_subject_label_clash_fails_both_without_naming_them(tmp_path):
     a = _patient(1, "MUELLER^THOMAS", "P1")
     b = _patient(2, "MUELLERS^THOMASINA", "P2")
