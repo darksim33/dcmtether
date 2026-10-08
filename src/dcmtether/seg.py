@@ -6,30 +6,36 @@ references its source image exactly. Segment metadata uses the dcmqi JSON templa
 (https://qiicr.org/dcmqi/#/seg). Error messages never contain element values or file names.
 """
 
-import copy
-import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import highdicom as hd
-import nibabel as nib
 import numpy as np
 from pydicom.sr.codedict import codes
 from pydicom.sr.coding import Code
 
-from dcmtether import __version__, orientation, reverse, uids
+from dcmtether import __version__
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import ORIENTATION_TOL, POSITION_TOL_MM
+from dcmtether.derived import (
+    CONTENT_DESCRIPTION,
+    EQUIPMENT,
+    DerivedError,
+    Source,
+    check_output,
+    load_on_grid,
+    load_source,
+    series_description,
+    template_code,
+    uids_for,
+    write,
+)
 
-#: Marks every derived object (PLAN.md §2, research labeling).
-RESEARCH_LABEL = "RESEARCH USE ONLY"
 _ALGORITHM_TYPES = {v.name for v in hd.seg.SegmentAlgorithmTypeValues}
-_LO_MAX = 64
 
 
-class SegError(ValueError):
-    """Expected failure with a safe (value-free) message."""
+#: Failures of SEG creation (all derived-object failures share one type).
+SegError = DerivedError
 
 
 # --- metadata (dcmqi template) -----------------------------------------------------------------
@@ -62,24 +68,6 @@ class SegMetadata:
     canonical: str = ""
 
 
-def _code(entry: dict, key: str, where: str, required: bool = True) -> Code | None:
-    value = entry.get(key)
-    if value is None:
-        if required:
-            raise SegError(f"{where}: {key} is missing")
-        return None
-    try:
-        return Code(
-            str(value["CodeValue"]),
-            str(value["CodingSchemeDesignator"]),
-            str(value["CodeMeaning"]),
-        )
-    except (KeyError, TypeError):
-        raise SegError(
-            f"{where}: {key} needs CodeValue, CodingSchemeDesignator and CodeMeaning"
-        ) from None
-
-
 def _segment(entry: dict, n: int) -> Segment:
     where = f"segment {n}"
     try:
@@ -103,20 +91,20 @@ def _segment(entry: dict, n: int) -> Segment:
     rgb = entry.get("recommendedDisplayRGBValue")
     if rgb is not None and (len(rgb) != 3 or not all(0 <= int(v) <= 255 for v in rgb)):
         raise SegError(f"{where}: recommendedDisplayRGBValue must be three values 0-255")
-    family = _code(entry, "SegmentAlgorithmFamilyCodeSequence", where, required=False)
+    family = template_code(entry, "SegmentAlgorithmFamilyCodeSequence", where, required=False)
     return Segment(
         label_id=label_id,
         label=str(label),
-        category=_code(entry, "SegmentedPropertyCategoryCodeSequence", where),
-        type=_code(entry, "SegmentedPropertyTypeCodeSequence", where),
+        category=template_code(entry, "SegmentedPropertyCategoryCodeSequence", where),
+        type=template_code(entry, "SegmentedPropertyTypeCodeSequence", where),
         algorithm_type=algorithm_type,
         algorithm_name=str(algorithm_name) if algorithm_name else None,
         algorithm_version=str(entry.get("SegmentAlgorithmVersion") or "unknown"),
         algorithm_family=family or codes.cid7162.ArtificialIntelligence,
-        type_modifier=_code(
+        type_modifier=template_code(
             entry, "SegmentedPropertyTypeModifierCodeSequence", where, required=False
         ),
-        anatomic_region=_code(entry, "AnatomicRegionSequence", where, required=False),
+        anatomic_region=template_code(entry, "AnatomicRegionSequence", where, required=False),
         rgb=tuple(int(v) for v in rgb) if rgb is not None else None,
     )
 
@@ -197,13 +185,9 @@ class SegResult:
     n_sources: int
 
 
-def _label_values(labels_path: Path, source_img, metadata: SegMetadata) -> np.ndarray:
+def _label_values(labels_path: Path, source: Source, metadata: SegMetadata) -> np.ndarray:
     """Label map on the source grid as int64 (checked: grid, integers, declared labels)."""
-    img = nib.load(labels_path)
-    if img.shape != source_img.shape[:3]:
-        raise SegError("label map shape does not match the source NIfTI (3D, same grid)")
-    if not np.allclose(img.affine, source_img.affine, rtol=0, atol=POSITION_TOL_MM):
-        raise SegError("label map affine does not match the source NIfTI (same grid needed)")
+    img = load_on_grid(labels_path, source, "label map")
     values = np.asanyarray(img.dataobj)
     if not np.all(np.isfinite(values)) or not np.array_equal(values, np.round(values)):
         raise SegError("label map has non-integer values")
@@ -220,113 +204,41 @@ def _label_values(labels_path: Path, source_img, metadata: SegMetadata) -> np.nd
     return labels
 
 
-def _sources(document: dict, datasets: list) -> tuple[list, list[int]]:
-    """Source images for highdicom and, per SEG frame, the slice index it shows."""
-    if len(document["pixel"]["shape_dicom"]) != 3:
-        raise SegError("label maps for 4D sources are not supported yet")
-    instances = document["instances"]
-    if any("frames" in i for i in instances):
-        if len(instances) > 1:
-            raise SegError("sources split over several multi-frame instances are not supported")
-        return datasets, [index[0] for index in instances[0]["frames"]]
-    order = sorted(range(len(instances)), key=lambda n: instances[n]["index"][0])
-    return [datasets[n] for n in order], [instances[n]["index"][0] for n in order]
-
-
-def _shared_geometry(source_images: list) -> list:
-    """Source copies with one shared orientation and pixel spacing, as highdicom requires.
-
-    highdicom compares orientations exactly and wants multi-frame geometry in the shared
-    functional groups. Scanners write rounding noise (GE) or per-frame groups (Philips); the
-    scan accepted differences up to ORIENTATION_TOL, so the first image's values are used.
-    Only the in-memory copies passed to highdicom change, never files or tether.json.
-    """
-    images = [copy.deepcopy(ds) for ds in source_images]
-    if len(images) == 1 and "PerFrameFunctionalGroupsSequence" in images[0]:
-        ds = images[0]
-        shared = ds.SharedFunctionalGroupsSequence[0]
-        per_frame = ds.PerFrameFunctionalGroupsSequence
-        for keyword, attribute in (
-            ("PlaneOrientationSequence", "ImageOrientationPatient"),
-            ("PixelMeasuresSequence", "PixelSpacing"),
-        ):
-            if keyword in shared or keyword not in per_frame[0]:
-                continue
-            values = np.asarray(
-                [[float(v) for v in item[keyword][0][attribute]] for item in per_frame]
-            )
-            if not np.allclose(values, values[0], rtol=0, atol=ORIENTATION_TOL):
-                raise SegError(f"source frames differ in {attribute}")
-            setattr(shared, keyword, per_frame[0][keyword])
-            for item in per_frame:
-                del item[keyword]
-        return images
-    orientations = np.asarray([[float(v) for v in ds.ImageOrientationPatient] for ds in images])
-    if not np.allclose(orientations, orientations[0], rtol=0, atol=ORIENTATION_TOL):
-        raise SegError("source images differ in ImageOrientationPatient")
-    for ds in images[1:]:
-        ds.ImageOrientationPatient = images[0].ImageOrientationPatient
-    return images
-
-
 def to_seg(
     source_nifti: Path, labels_nifti: Path, metadata: SegMetadata, output: Path
 ) -> SegResult:
     """Write a DICOM SEG for the label map ``labels_nifti`` on the grid of ``source_nifti``."""
-    if output.exists():
-        raise SegError("output file already exists (existing files are never overwritten)")
-    try:
-        document, datasets = reverse.rebuild(source_nifti)
-    except reverse.ReverseError as exc:
-        raise SegError(f"source: {exc}") from None
-    source_images, slices = _sources(document, datasets)
-    source_img = nib.load(source_nifti)
-    labels = _label_values(labels_nifti, source_img, metadata)
+    check_output(output)
+    source = load_source(source_nifti)
+    labels = _label_values(labels_nifti, source, metadata)
 
     numbering = {s.label_id: n for n, s in enumerate(metadata.segments, start=1)}
     lut = np.zeros(max(numbering) + 1, dtype=np.uint16)
     for label_id, number in numbering.items():
         lut[label_id] = number
-    ornt = np.asarray(document["pixel"]["orientation"]["ornt_transform"])
-    labels_dicom = orientation.from_closest_ras(lut[labels], ornt)  # (rows, columns, slices)
     dtype = np.uint8 if len(numbering) < 256 else np.uint16
-    pixel_array = np.stack([labels_dicom[:, :, k] for k in slices]).astype(dtype)
+    pixel_array = source.frames(lut[labels]).astype(dtype)
+    series_uid, sop_uid = uids_for(source, "seg", [metadata.canonical], pixel_array)
 
-    source_uid = document["source"]["series_instance_uid"]
-    content = hashlib.sha256()
-    for part in (source_uid, "seg", str(pixel_array.shape), metadata.canonical):
-        content.update(part.encode("utf-8") + b"\0")
-    content.update(np.ascontiguousarray(pixel_array).tobytes())
-    content_hash = content.hexdigest()
-
-    description = metadata.series_description[: _LO_MAX - len(RESEARCH_LABEL) - 1]
     with quiet_pydicom():
         segmentation = hd.seg.Segmentation(
-            source_images=_shared_geometry(source_images),
+            source_images=source.images,
             pixel_array=pixel_array,
             segmentation_type=hd.seg.SegmentationTypeValues.BINARY,
             segment_descriptions=[
                 _description(s, numbering[s.label_id]) for s in metadata.segments
             ],
-            series_instance_uid=uids.derived_uid(source_uid, "seg", content_hash, "series"),
+            series_instance_uid=series_uid,
             series_number=metadata.series_number,
-            sop_instance_uid=uids.derived_uid(source_uid, "seg", content_hash, "instance"),
+            sop_instance_uid=sop_uid,
             instance_number=metadata.instance_number,
-            manufacturer="dcmtether",
-            manufacturer_model_name="dcmtether",
             software_versions=__version__,
-            device_serial_number="none",
             content_label=metadata.content_label,
-            content_description=f"{RESEARCH_LABEL} - not for clinical use",
+            content_description=CONTENT_DESCRIPTION,
             content_creator_name=metadata.content_creator_name,
             omit_empty_frames=True,
+            **EQUIPMENT,
         )
-        segmentation.SeriesDescription = f"{description} {RESEARCH_LABEL}"
-        partial = output.with_name(output.name + ".partial")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            segmentation.save_as(partial)
-            partial.rename(output)
-        finally:
-            partial.unlink(missing_ok=True)
-    return SegResult(output, numbering, len(source_images))
+        segmentation.SeriesDescription = series_description(metadata.series_description)
+    write(segmentation, output)
+    return SegResult(output, numbering, len(source.images))
