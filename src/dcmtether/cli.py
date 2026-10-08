@@ -1,4 +1,4 @@
-"""Command-line interface. Subcommands are stubs until their phase lands (see docs/dev/PLAN.md)."""
+"""Command-line interface (see docs/dev/PLAN.md). Output never names patients, UIDs or paths."""
 
 from collections import Counter
 from pathlib import Path
@@ -6,21 +6,20 @@ from pathlib import Path
 import click
 
 from dcmtether import __version__
+from dcmtether.compare import compare_series, dicom_files
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import ManifestError, manifest_path, write_manifest
+from dcmtether.reverse import ReverseError, to_dicom
 from dcmtether.scan import Status, plural
 from dcmtether.scan import scan as scan_directory
+from dcmtether.tether import TetherError
 
+#: Exit code for commands that are not implemented yet.
 EXIT_NOT_IMPLEMENTED = 3
 
 _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
 _output_dir = click.Path(file_okay=False, path_type=Path)
-
-
-def _not_implemented(command: str) -> None:
-    click.echo(f"dcmtether {command}: not implemented yet", err=True)
-    raise click.exceptions.Exit(EXIT_NOT_IMPLEMENTED)
 
 
 @click.group(help="Lossless DICOM <-> NIfTI round trips for MRI series. Research use only.")
@@ -92,14 +91,34 @@ def to_nii(dataset: Path) -> None:
 def to_dcm(nifti: Path, output: Path) -> None:
     """Rebuild DICOM from a NIfTI file and its *.tether.json.
 
-    Reads NIFTI (plus the matching *.tether.json next to it) and writes DICOM files to OUTPUT.
+    Reads NIFTI (plus the matching *.tether.json next to it) and writes DICOM files to OUTPUT,
+    under their original names relative to the series' source directory. Existing files are
+    never overwritten.
     """
-    _not_implemented("to-dcm")
+    try:
+        written = to_dicom(nifti, output)
+    except (ReverseError, TetherError) as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(f"Wrote {plural(len(written), 'DICOM file')}.")
 
 
 @main.command()
 @click.argument("original", type=_existing_dir)
 @click.argument("rebuilt", type=_existing_dir)
 def compare(original: Path, rebuilt: Path) -> None:
-    """Compare ORIGINAL and REBUILT DICOM series element by element."""
-    _not_implemented("compare")
+    """Compare ORIGINAL and REBUILT DICOM series element by element.
+
+    Instances are paired by SOPInstanceUID. Exit code 0 if identical, 1 if not.
+    """
+    report = compare_series(dicom_files(original), dicom_files(rebuilt))
+    compared = plural(report.n_compared, "instance")
+    if report.identical:
+        click.echo(f"Identical: {compared} compared.")
+    else:
+        click.echo(f"{plural(len(report.differences), 'difference')} in {compared} compared:")
+        for line in report.lines():
+            click.echo(f"  {line}")
+    for note in report.notes:
+        click.echo(f"  note: {note.line()}")
+    if not report.identical:
+        raise click.exceptions.Exit(1)
