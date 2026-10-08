@@ -10,6 +10,10 @@ dependencies = [
     "nibabel>=5.4.2",
     "numpy>=2.5.3",
     "pydicom>=3.0.2",
+    "pylibjpeg>=2.1.0",
+    "pylibjpeg-libjpeg>=2.4.0",
+    "pylibjpeg-openjpeg>=2.6.0",
+    "pylibjpeg-rle>=2.2.0",
 ]
 
 [project.scripts]

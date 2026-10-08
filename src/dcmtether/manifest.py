@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from dcmtether import __version__
 from dcmtether.scan import ScanResult
 
 MANIFEST_NAME = "manifest.sqlite"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Version 1 as written by Phase 1; newer versions are reached via _UPGRADES only, so new
 # manifests and upgraded old ones always end up identical.
@@ -71,6 +72,24 @@ ALTER TABLE series ADD COLUMN conversion_status TEXT
     CHECK (conversion_status IN ('converted', 'failed'));
 ALTER TABLE series ADD COLUMN conversion_error TEXT;
 """,
+    # 2 → 3 (Phase 4): a series can have several outputs (chunks of a split series).
+    3: """
+CREATE TABLE outputs (
+    series_id    INTEGER NOT NULL REFERENCES series (id),
+    chunk        INTEGER NOT NULL,          -- 1..n; one NIfTI per image plane of a series
+    nifti_path   TEXT NOT NULL UNIQUE,      -- POSIX, relative to the dataset
+    tether_path  TEXT NOT NULL,
+    sidecar_path TEXT NOT NULL,
+    n_volumes    INTEGER NOT NULL,
+    PRIMARY KEY (series_id, chunk)
+);
+INSERT INTO outputs (series_id, chunk, nifti_path, tether_path, sidecar_path, n_volumes)
+    SELECT id, 1, nifti_path, tether_path, sidecar_path, 1 FROM series
+    WHERE nifti_path IS NOT NULL;
+ALTER TABLE series DROP COLUMN nifti_path;
+ALTER TABLE series DROP COLUMN tether_path;
+ALTER TABLE series DROP COLUMN sidecar_path;
+""",
 }
 
 
@@ -118,21 +137,32 @@ def instance_paths(db: sqlite3.Connection, series_id: int) -> list[str]:
     return [r[0] for r in rows]
 
 
+@dataclass(frozen=True)
+class Output:
+    chunk: int
+    nifti_path: str
+    tether_path: str
+    sidecar_path: str
+    n_volumes: int
+
+
 def record_converted(
-    db: sqlite3.Connection,
-    series_id: int,
-    subject: str,
-    session: str,
-    nifti_path: str,
-    tether_path: str,
-    sidecar_path: str,
+    db: sqlite3.Connection, series_id: int, subject: str, session: str, outputs: list[Output]
 ) -> None:
     with db:
         db.execute(
-            """UPDATE series SET subject = ?, session = ?, nifti_path = ?, tether_path = ?,
-               sidecar_path = ?, conversion_status = 'converted', conversion_error = NULL
-               WHERE id = ?""",
-            (subject, session, nifti_path, tether_path, sidecar_path, series_id),
+            """UPDATE series SET subject = ?, session = ?, conversion_status = 'converted',
+               conversion_error = NULL WHERE id = ?""",
+            (subject, session, series_id),
+        )
+        db.execute("DELETE FROM outputs WHERE series_id = ?", (series_id,))
+        db.executemany(
+            "INSERT INTO outputs (series_id, chunk, nifti_path, tether_path, sidecar_path, "
+            "n_volumes) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (series_id, o.chunk, o.nifti_path, o.tether_path, o.sidecar_path, o.n_volumes)
+                for o in outputs
+            ],
         )
 
 
@@ -142,6 +172,7 @@ def record_failed(db: sqlite3.Connection, series_id: int, error: str) -> None:
             "UPDATE series SET conversion_status = 'failed', conversion_error = ? WHERE id = ?",
             (error, series_id),
         )
+        db.execute("DELETE FROM outputs WHERE series_id = ?", (series_id,))
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -174,7 +205,10 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
         _upgrade(db)
         for series_id, series in enumerate(result.series, start=1):
             first = series.first
-            source_dir = Path(os.path.commonpath([i.path.parent for i in series.instances]))
+            source_dir = Path(os.path.commonpath([path.parent for path in series.files]))
+            files = {}  # one row per file (multi-frame files hold several images)
+            for inst in series.instances:
+                files.setdefault(inst.path, inst)
             db.execute(
                 """INSERT INTO series (
                     id, series_instance_uid, study_instance_uid, status, reasons, modality,
@@ -200,7 +234,7 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
                     first.body_part_examined,
                     first.series_number,
                     first.series_description,
-                    len(series.instances),
+                    len(files),
                     _relative(source_dir, result.root),
                     json.dumps(series.geometry),
                 ),
@@ -215,7 +249,7 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
                         i.sop_instance_uid,
                         i.instance_number,
                     )
-                    for i in series.instances
+                    for i in files.values()
                 ],
             )
         db.executemany(

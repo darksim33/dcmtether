@@ -9,11 +9,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import nibabel as nib
 import numpy as np
 import pydicom
-from pydicom.uid import ExplicitVRBigEndian
+from pydicom.uid import UID, ExplicitVRBigEndian, ExplicitVRLittleEndian
 
-from dcmtether import forward, orientation, tether
+from dcmtether import forward, frames, orientation, tether
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import POSITION_TOL_MM
+from dcmtether.scan import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES, POSITION_TOL_MM
 
 PARTIAL_SUFFIX = ".partial"
 
@@ -53,8 +53,13 @@ def _targets(document: dict, output_dir: Path) -> list[Path]:
     return targets
 
 
-def _dicom_order_volume(nifti_path: Path, document: dict, datasets: list) -> np.ndarray:
-    """Raw voxels in DICOM order, after checking the NIfTI belongs to this tether.json."""
+def _dicom_order_volume(
+    nifti_path: Path, document: dict, images: list, indices: list
+) -> np.ndarray:
+    """Raw voxels in DICOM order, after checking the NIfTI belongs to this tether.json.
+
+    ``images``/``indices``: one per image (frame views for multi-frame instances).
+    """
     pixel = document["pixel"]
     ornt = np.asarray(pixel["orientation"]["ornt_transform"])
     shape_dicom = tuple(pixel["shape_dicom"])
@@ -63,16 +68,18 @@ def _dicom_order_volume(nifti_path: Path, document: dict, datasets: list) -> np.
 
     if data.dtype.name != pixel["dtype"]:
         raise ReverseError("NIfTI data type does not match the tether.json")
-    expected_shape = [0] * len(shape_dicom)
+    expected_shape = list(shape_dicom)  # axes after the third (volumes) are not reoriented
     for axis, (target, _) in enumerate(ornt):
         expected_shape[int(target)] = shape_dicom[axis]
     if data.shape != tuple(expected_shape):
         raise ReverseError("NIfTI shape does not match the tether.json")
 
-    in_order = [ds for _, ds in sorted(zip(_slices(document), datasets, strict=True))]
+    if any(len(index) != len(shape_dicom) - 2 for index in indices):
+        raise ReverseError("instance indices do not match the volume shape in the tether.json")
     with quiet_pydicom():
-        affine_ras = orientation.LPS_TO_RAS @ forward.volume_affine(in_order)
-        expected_scaling = forward.rescale(in_order) or (1.0, 0.0)
+        stack = forward.first_volume(images, indices)
+        affine_ras = orientation.LPS_TO_RAS @ forward.volume_affine(stack)
+        expected_scaling = forward.nifti_scaling(images) or (1.0, 0.0)
     expected = orientation.reoriented_affine(affine_ras, ornt, shape_dicom)
     if not np.allclose(img.affine, expected, rtol=0, atol=POSITION_TOL_MM):
         raise ReverseError("NIfTI affine does not match the geometry in the tether.json")
@@ -83,11 +90,11 @@ def _dicom_order_volume(nifti_path: Path, document: dict, datasets: list) -> np.
     return orientation.from_closest_ras(data, ornt)
 
 
-def _slices(document: dict) -> list[int]:
-    indices = [i["index"] for i in document["instances"]]
-    if any(len(index) != 1 for index in indices):
-        raise ReverseError("only 3D series (one index per instance) are supported")
-    return [index[0] for index in indices]
+def _frame_indices(instance: dict) -> list[tuple[int, ...]]:
+    """Indices into the DICOM-order volume, one per frame: (slice,) or (slice, volume)."""
+    if "frames" in instance:
+        return [tuple(index) for index in instance["frames"]]
+    return [tuple(instance["index"])]
 
 
 def _set_pixel_data(ds: pydicom.Dataset, plane: np.ndarray, vr: str, trailing: str | None) -> None:
@@ -102,6 +109,17 @@ def _set_pixel_data(ds: pydicom.Dataset, plane: np.ndarray, vr: str, trailing: s
     ds["PixelData"].VR = vr
 
 
+def transfer_syntax_change(document: dict) -> tuple[str, str] | None:
+    """(source, written) transfer syntax names if to-dcm does not write the source's syntax.
+
+    Lossless compressed sources are written as Explicit VR Little Endian (PLAN.md §2).
+    """
+    source = UID(document["source"]["transfer_syntax_uid"])
+    if source in LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES:
+        return source.name, ExplicitVRLittleEndian.name
+    return None
+
+
 def rebuild(nifti_path: Path) -> tuple[dict, list[pydicom.Dataset]]:
     """The tether document and the complete datasets (with pixel data), in instance order."""
     tether_path = tether_path_for(nifti_path)
@@ -109,10 +127,23 @@ def rebuild(nifti_path: Path) -> tuple[dict, list[pydicom.Dataset]]:
         raise ReverseError("no *.tether.json next to the NIfTI")
     document = tether.load(tether_path)
     datasets = tether.rebuild_datasets(document)
-    volume = _dicom_order_volume(nifti_path, document, datasets)
+    images, indices = [], []
+    with quiet_pydicom():
+        for ds, instance in zip(datasets, document["instances"], strict=True):
+            frame_indices = _frame_indices(instance)
+            views = frames.frame_views(ds) if "frames" in instance else [ds]
+            if len(views) != len(frame_indices):
+                raise ReverseError("number of frames does not match the tether.json")
+            images += views
+            indices += frame_indices
+    volume = _dicom_order_volume(nifti_path, document, images, indices)
     vr = document["pixel"]["pixel_data_vr"]
-    for k, ds, instance in zip(_slices(document), datasets, document["instances"], strict=True):
-        _set_pixel_data(ds, volume[:, :, k], vr, instance.get("pixel_data_trailing"))
+    for ds, instance in zip(datasets, document["instances"], strict=True):
+        if ds.file_meta.TransferSyntaxUID in LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES:
+            ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        planes = [volume[(slice(None), slice(None), *index)] for index in _frame_indices(instance)]
+        plane = np.stack(planes) if "frames" in instance else planes[0]
+        _set_pixel_data(ds, plane, vr, instance.get("pixel_data_trailing"))
     return document, datasets
 
 

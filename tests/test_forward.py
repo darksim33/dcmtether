@@ -9,13 +9,16 @@ import numpy as np
 import pydicom
 import pytest
 from click.testing import CliRunner
-from roundtrip import SPECS
+from roundtrip import SPECS, output_rows
 from synthetic import (
     SAGITTAL,
     SeriesSpec,
     SyntheticSeries,
+    make_4d,
+    make_enhanced,
     make_localizer,
     make_series,
+    make_two_planes,
     write_series,
 )
 
@@ -46,16 +49,27 @@ def _manifest_rows(dataset: Path) -> list[dict]:
 
 
 def _world_space_check(nifti_path: Path, series: SyntheticSeries) -> None:
-    """Every NIfTI voxel must hold the ground-truth value at the same LPS position."""
+    """Every NIfTI voxel must hold the ground-truth value at the same LPS position.
+
+    4D: the volume axis is not reoriented, so volume ``v`` is checked against truth ``[..., v]``.
+    """
     img = nib.load(nifti_path)
     data = np.asarray(img.dataobj.get_unscaled())
-    ijk = np.indices(data.shape).reshape(3, -1)
-    ras = img.affine @ np.vstack([ijk, np.ones(ijk.shape[1])])
-    lps = orientation.LPS_TO_RAS @ ras
-    truth_ijk = np.linalg.solve(series.affine_lps, lps)[:3]
-    np.testing.assert_allclose(truth_ijk, np.rint(truth_ijk), atol=1e-3)
-    idx = tuple(np.rint(truth_ijk).astype(int))
-    np.testing.assert_array_equal(data.reshape(-1), series.volume[idx])
+    assert data.ndim == series.volume.ndim
+    volumes = [data] if data.ndim == 3 else [data[..., v] for v in range(data.shape[3])]
+    truths = (
+        [series.volume]
+        if series.volume.ndim == 3
+        else [series.volume[..., v] for v in range(series.volume.shape[3])]
+    )
+    for volume, truth in zip(volumes, truths, strict=True):
+        ijk = np.indices(volume.shape).reshape(3, -1)
+        ras = img.affine @ np.vstack([ijk, np.ones(ijk.shape[1])])
+        lps = orientation.LPS_TO_RAS @ ras
+        truth_ijk = np.linalg.solve(series.affine_lps, lps)[:3]
+        np.testing.assert_allclose(truth_ijk, np.rint(truth_ijk), atol=1e-3)
+        idx = tuple(np.rint(truth_ijk).astype(int))
+        np.testing.assert_array_equal(volume.reshape(-1), truth[idx])
 
 
 # --- geometry and voxels -----------------------------------------------------------------------
@@ -74,6 +88,100 @@ def test_voxels_match_ground_truth_in_world_space(tmp_path, spec):
     assert nib.aff2axcodes(img.affine) == ("R", "A", "S")
     assert img.get_data_dtype() == series.volume.dtype
     assert img.header["sform_code"] == 1 and img.header["qform_code"] == 1
+
+
+# --- 4D and split series -----------------------------------------------------------------------
+
+
+def _single_output(dataset: Path) -> Path:
+    [row] = output_rows(dataset)
+    return dataset / row["nifti_path"]
+
+
+@pytest.mark.parametrize("kind", ["echo", "dynamic", "diffusion"])
+@pytest.mark.parametrize(
+    "spec",
+    [SeriesSpec(), SPECS["oblique-40"], SPECS["descending"], SeriesSpec(shuffle=True, seed=6)],
+    ids=["axial", "oblique-40", "descending", "shuffled"],
+)
+def test_4d_voxels_match_ground_truth(tmp_path, kind, spec):
+    series = make_4d(spec, n_volumes=3, kind=kind)
+    dataset = _dataset(tmp_path, series)
+    outcomes = convert_dataset(dataset)
+    assert [o.ok for o in outcomes] == [True], [o.message for o in outcomes]
+    nifti = _single_output(dataset)
+    _world_space_check(nifti, series)
+    assert nib.load(nifti).shape[3] == 3
+
+
+def test_4d_tether_indices(tmp_path):
+    dataset = _dataset(tmp_path, make_4d(n_volumes=2))
+    convert_dataset(dataset)
+    doc = json.loads(
+        _single_output(dataset).with_suffix("").with_suffix(".tether.json").read_text()
+    )
+    assert doc["pixel"]["shape_dicom"] == [6, 8, 5, 2]
+    assert [i["index"] for i in doc["instances"]] == [[k, v] for v in range(2) for k in range(5)]
+
+
+def test_4d_uniform_rescale_goes_into_header(tmp_path):
+    dataset = _dataset(tmp_path, make_4d(SeriesSpec(rescale=(2.0, -5.0))))
+    convert_dataset(dataset)
+    img = nib.load(_single_output(dataset))
+    assert (img.dataobj.slope, img.dataobj.inter) == (2.0, -5.0)
+
+
+def test_4d_per_volume_rescale_leaves_header_unscaled(tmp_path):
+    series = make_4d(n_volumes=3, volume_rescale=[(1.0, 0.0), (2.0, 0.0), (2.0, -5.0)])
+    dataset = _dataset(tmp_path, series)
+    convert_dataset(dataset)
+    nifti = _single_output(dataset)
+    img = nib.load(nifti)
+    assert (img.dataobj.slope, img.dataobj.inter) == (1.0, 0.0)
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    assert "RescaleSlope" not in sidecar
+    assert sidecar["DcmTether"]["PerVolume"]["RescaleSlope"] == [1.0, 2.0, 2.0]
+    assert sidecar["DcmTether"]["PerVolume"]["RescaleIntercept"] == [0.0, 0.0, -5.0]
+
+
+def test_multi_echo_sidecar(tmp_path):
+    dataset = _dataset(tmp_path, make_4d(n_volumes=3, kind="echo"))
+    convert_dataset(dataset)
+    nifti = _single_output(dataset)
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    assert "EchoTime" not in sidecar  # differs per volume
+    assert sidecar["RepetitionTime"] == 0.5
+    assert sidecar["DcmTether"]["VolumeKey"] == ["EchoNumbers"]
+    assert sidecar["DcmTether"]["PerVolume"]["EchoTime"] == [0.015, 0.03, 0.045]
+    assert sidecar["DcmTether"]["PerVolume"]["EchoNumbers"] == [1, 2, 3]
+
+
+def test_diffusion_goes_to_dwi(tmp_path):
+    dataset = _dataset(tmp_path, make_4d(n_volumes=3, kind="diffusion"))
+    convert_dataset(dataset)
+    nifti = _single_output(dataset)
+    assert nifti.relative_to(dataset).parts[:3] == ("sub-SynthPhant", "ses-20260101", "dwi")
+    assert nifti.name == "sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_dwi.nii.gz"
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    assert sidecar["DcmTether"]["SuffixRule"] == "diffusion volumes"
+    per_volume = sidecar["DcmTether"]["PerVolume"]
+    assert per_volume["DiffusionBValue"] == [0.0, 1000.0, 1000.0]
+    assert per_volume["DiffusionGradientOrientation"] == [None, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+
+
+@pytest.mark.parametrize("make", [make_localizer, make_two_planes], ids=["localizer", "two-planes"])
+def test_split_series_become_chunks(tmp_path, make):
+    series = make()
+    dataset = _dataset(tmp_path, series)
+    outcomes = convert_dataset(dataset)
+    assert [o.ok for o in outcomes] == [True], [o.message for o in outcomes]
+    rows = output_rows(dataset)
+    assert [r["chunk"] for r in rows] == list(range(1, len(series.parts) + 1))
+    for row, part in zip(rows, series.parts, strict=True):
+        assert f"_chunk-{row['chunk']}_" in row["nifti_path"]
+        _world_space_check(dataset / row["nifti_path"], part)
+        sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
+        assert sidecar["DcmTether"]["Chunk"] == row["chunk"]
 
 
 def test_uniform_rescale_goes_into_header_not_voxels(tmp_path):
@@ -101,7 +209,7 @@ def test_tether_document(tmp_path):
     convert_dataset(dataset)
     doc = json.loads((dataset / DEFAULT_DIR / f"{DEFAULT_STEM}.tether.json").read_text("utf-8"))
 
-    assert doc["format_version"] == 2
+    assert doc["format_version"] == 3
     assert doc["source"]["series_instance_uid"] == series.series_instance_uid
     assert doc["source"]["n_instances"] == 5
     assert doc["pixel"]["dtype"] == "uint16"
@@ -165,19 +273,35 @@ def test_sidecar(tmp_path):
 
 
 def test_manifest_records_outputs(tmp_path):
-    dataset = _dataset(tmp_path, make_series(), make_localizer(seed=5), names=["a", "loc"])
+    dataset = _dataset(
+        tmp_path,
+        make_series(),
+        make_localizer(),  # same patient as make_series(): a different PatientID would clash
+        make_4d(SeriesSpec(series_number=7), kind="none"),
+        names=["a", "loc", "none"],
+    )
     convert_dataset(dataset)
     rows = {r["source_dir"]: r for r in _manifest_rows(dataset)}
-    converted, split = rows["a"], rows["loc"]
+    converted, split, unsupported = rows["a"], rows["loc"], rows["none"]
     assert converted["conversion_status"] == "converted"
     assert converted["subject"] == "SynthPhant"
     assert converted["session"] == "20260101"
-    assert converted["nifti_path"] == (DEFAULT_DIR / f"{DEFAULT_STEM}.nii.gz").as_posix()
-    assert converted["tether_path"].endswith(".tether.json")
-    assert converted["sidecar_path"].endswith("_T1w.json")
-    assert split["conversion_status"] is None  # only supported series are converted
+    assert split["conversion_status"] == "converted"
+    assert unsupported["conversion_status"] is None  # never attempted
+    outputs = output_rows(dataset)
+    assert [(o["series_id"], o["chunk"]) for o in outputs] == [
+        (converted["id"], 1),
+        (split["id"], 1),
+        (split["id"], 2),
+        (split["id"], 3),
+    ]
+    first = outputs[0]
+    assert first["nifti_path"] == (DEFAULT_DIR / f"{DEFAULT_STEM}.nii.gz").as_posix()
+    assert first["tether_path"].endswith(".tether.json")
+    assert first["sidecar_path"].endswith("_T1w.json")
+    assert first["n_volumes"] == 1
     with sqlite3.connect(dataset / "manifest.sqlite") as db:
-        assert db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ("2",)
+        assert db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ("3",)
 
 
 def test_dataset_readme_warns_and_is_not_overwritten(tmp_path):
@@ -235,6 +359,48 @@ def _patient(seed, name, pid, date="20260101", time="120000", study=None, number
         for ds in s.datasets:
             ds.StudyInstanceUID = study
     return s
+
+
+# --- acq- source: ProtocolName, else SeriesDescription -----------------------------------------
+
+
+def _named_series(protocol: str | None, description: str) -> SyntheticSeries:
+    extra = {} if protocol is None else {"ProtocolName": protocol}
+    return make_series(SeriesSpec(series_description=description, extra=extra))
+
+
+def _converted_stem_and_sidecar(tmp_path, series) -> tuple[str, dict]:
+    dataset = _dataset(tmp_path, series)
+    assert all(o.ok for o in convert_dataset(dataset))
+    [row] = output_rows(dataset)
+    sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
+    return Path(row["nifti_path"]).name.removesuffix(".nii.gz"), sidecar
+
+
+def test_acq_uses_protocol_name(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(
+        tmp_path, _named_series("sag PD fs", "sag PD fs_ND")
+    )
+    assert stem == "sub-SynthPhant_ses-20260101_acq-sagPDFs_ser-01_PDw"
+    assert sidecar["DcmTether"]["AcqSource"] == "ProtocolName"
+    assert sidecar["DcmTether"]["SuffixRule"] == "keyword:pdw"
+
+
+def test_suffix_keywords_come_from_the_protocol_name(tmp_path):
+    stem, _ = _converted_stem_and_sidecar(tmp_path, _named_series("t2_tse", "t1 something"))
+    assert stem.endswith("_acq-t2Tse_ser-01_T2w")
+
+
+def test_acq_falls_back_to_series_description(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, make_series())
+    assert stem == DEFAULT_STEM
+    assert sidecar["DcmTether"]["AcqSource"] == "SeriesDescription"
+
+
+def test_no_acq_without_protocol_and_description(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series(None, ""))
+    assert stem == "sub-SynthPhant_ses-20260101_ser-01_T1w"
+    assert "AcqSource" not in sidecar["DcmTether"]
 
 
 def test_subject_label_clash_fails_both_without_naming_them(tmp_path):
@@ -359,6 +525,101 @@ def test_matches_dcm2niix_on_real_ge_adc_series(tmp_path, test_file):
     write_manifest(dataset, scan(tmp_path / "src"))
     outcomes = convert_dataset(dataset)
     assert [o.ok for o in outcomes] == [True], [o.message for o in outcomes]
-    [row] = _manifest_rows(dataset)
+    [row] = output_rows(dataset)
     theirs = _dcm2niix(src, tmp_path / "oracle")
     _assert_same_image(dataset / row["nifti_path"], theirs)
+
+
+@pytest.mark.parametrize("kind", ["dynamic", "diffusion"])
+def test_4d_matches_dcm2niix(tmp_path, kind):
+    dataset = _dataset(tmp_path, make_4d(SPECS["oblique"], n_volumes=3, kind=kind))
+    convert_dataset(dataset)
+    theirs = _dcm2niix(tmp_path / "src", tmp_path / "oracle")
+    _assert_same_image(_single_output(dataset), theirs)
+
+
+def test_multi_echo_matches_dcm2niix_per_echo(tmp_path):
+    # dcm2niix writes one file per echo (oracle_e1 ...); we write one 4D file.
+    dataset = _dataset(tmp_path, make_4d(SPECS["oblique"], n_volumes=3, kind="echo"))
+    convert_dataset(dataset)
+    exe = shutil.which("dcm2niix")
+    if exe is None:
+        pytest.skip("dcm2niix not installed")
+    out = tmp_path / "oracle"
+    out.mkdir()
+    subprocess.run(
+        [exe, "-z", "n", "-b", "n", "-f", "oracle", "-o", str(out), str(tmp_path / "src")],
+        check=True,
+        capture_output=True,
+    )
+    ours, our_affine = _canonical_raw(_single_output(dataset))
+    for v in range(3):
+        theirs, their_affine = _canonical_raw(out / f"oracle_e{v + 1}.nii")
+        np.testing.assert_allclose(our_affine, their_affine, atol=1e-3)
+        np.testing.assert_array_equal(ours[..., v], theirs)
+
+
+# --- compressed sources ------------------------------------------------------------------------
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("codec", ["RLE", "JPLL", "JLSL", "J2KR"])
+@pytest.mark.parametrize("n", [1, 2, 3, 4])
+def test_lossless_compressed_gives_the_same_nifti_as_uncompressed(tmp_path, test_file, codec, n):
+    """WG04 ships each image uncompressed (REF) and in every codec: the NIfTIs must agree."""
+    images = {}
+    for variant in (f"REF/MR{n}_UNC", f"{codec}/MR{n}_{codec}"):
+        source = tmp_path / variant.replace("/", "_") / "src" / "s"
+        source.mkdir(parents=True)
+        shutil.copy(test_file(f"WG04/{variant}"), source / "file.dcm")
+        dataset = source.parent.parent / "dataset"
+        write_manifest(dataset, scan(source.parent))
+        assert all(o.ok for o in convert_dataset(dataset))
+        [row] = output_rows(dataset)
+        img = nib.load(dataset / row["nifti_path"])
+        images[variant] = (np.asarray(img.dataobj.get_unscaled()), img.affine)
+    (ref, ref_affine), (other, other_affine) = images.values()
+    np.testing.assert_array_equal(ref, other)
+    np.testing.assert_array_equal(ref_affine, other_affine)
+
+
+# --- enhanced multi-frame ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spec", ["axial", "oblique-40", "descending", "single-slice"])
+def test_enhanced_3d_voxels_match_ground_truth(tmp_path, spec):
+    series = make_enhanced(make_series(SPECS[spec]))
+    dataset = _dataset(tmp_path, series)
+    outcomes = convert_dataset(dataset)
+    assert [o.ok for o in outcomes] == [True], [o.message for o in outcomes]
+    _world_space_check(_single_output(dataset), series)
+
+
+@pytest.mark.parametrize("kind", ["echo", "dynamic", "diffusion"])
+@pytest.mark.parametrize("n_files", [1, 3])
+def test_enhanced_4d_voxels_match_ground_truth(tmp_path, kind, n_files):
+    series = make_enhanced(make_4d(SPECS["oblique"], kind=kind), n_files=n_files)
+    dataset = _dataset(tmp_path, series)
+    outcomes = convert_dataset(dataset)
+    assert [o.ok for o in outcomes] == [True], [o.message for o in outcomes]
+    _world_space_check(_single_output(dataset), series)
+
+
+def test_enhanced_tether_lists_frames(tmp_path):
+    dataset = _dataset(tmp_path, make_enhanced(make_4d(n_volumes=2), n_files=2))
+    convert_dataset(dataset)
+    nifti = _single_output(dataset)
+    doc = json.loads(nifti.with_suffix("").with_suffix(".tether.json").read_text("utf-8"))
+    assert doc["pixel"]["shape_dicom"] == [6, 8, 5, 2]
+    assert [i["frames"] for i in doc["instances"]] == [[[k, v] for k in range(5)] for v in range(2)]
+    assert all("index" not in i for i in doc["instances"])
+
+
+def test_enhanced_sidecar_uses_functional_groups(tmp_path):
+    dataset = _dataset(tmp_path, make_enhanced(make_4d(kind="echo")))
+    convert_dataset(dataset)
+    nifti = _single_output(dataset)
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    assert sidecar["DcmTether"]["VolumeKey"] == ["EffectiveEchoTime"]
+    assert sidecar["DcmTether"]["PerVolume"]["EchoTime"] == [0.015, 0.03, 0.045]
+    assert sidecar["SliceThickness"] == 3.0  # from PixelMeasuresSequence

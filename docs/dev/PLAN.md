@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phases 0–3 done (gate passed); next: Phase 4. This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–4 done (4a/4b/4c); next: Phase 5 (derivatives). This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -27,16 +27,20 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | Topic | Decision |
 |---|---|
 | Language | Python. Core libs: `pydicom`, `nibabel`, `numpy`, `highdicom`; CLI: `click`. Tooling: `uv`, `pytest`, `ruff`. A Rust port is optional later, using the Python tests as reference. |
-| Test data | `dicom-test-files` only. **No real patient data in Claude Code sessions** — not as files, not in logs, not in error messages. Real data is run locally, outside sessions; only anonymized failure reports come back. |
+| Test data | `dicom-test-files`, plus Chris Rorden's **dcm_qa** repositories (dcm2niix validation data, BSD-2-Clause; added 2026-10-08), pinned per commit with git blob SHA-1 checks (`tests/dcmqa.py`, `tests/data/dcm_qa.json`). **No real patient data in Claude Code sessions** — not as files, not in logs, not in error messages. Real data is run locally, outside sessions; only anonymized failure reports come back. |
 | NIfTI orientation | Reoriented to **closest RAS** (axis permutation/flip only, **never resampled**). The applied transform is stored in `tether.json`; a helper applies/inverts it. Oblique rotation stays in the affine. |
-| NIfTI voxel values | **Raw stored values** in the original dtype. RescaleSlope/Intercept (and vendor private scaling, e.g. Philips) stay in the metadata, not baked into voxels. If slope/intercept are uniform across the series they are **also** written to NIfTI `scl_slope`/`scl_inter` so viewers show real values; per-slice varying rescale → Phase 1 classifies as `split`/`unsupported` (NIfTI has only one global scaling). |
+| NIfTI voxel values | **Raw stored values** in the original dtype. RescaleSlope/Intercept (and vendor private scaling, e.g. Philips) stay in the metadata, not baked into voxels. If slope/intercept are uniform across the series they are **also** written to NIfTI `scl_slope`/`scl_inter` so viewers show real values. Rescale varying within a volume → `unsupported`; varying **between** volumes of a 4D series (Philips) is allowed, but then `scl_slope`/`scl_inter` stay unset and the values are listed per volume in the sidecar (NIfTI has only one global scaling). |
 | Recovery metadata | **DICOM JSON Model** (PS3.18 Annex F) via `Dataset.to_json_dict()` / `Dataset.from_json()`. One `*.tether.json` **per NIfTI** (= per series), structured as file meta + shared + per-instance elements. PixelData excluded. |
 | Shared vs per-instance | An element goes into `shared` only if it is **present in every instance with an equal value**; otherwise it is stored per instance (absence is represented by omission in that instance). |
 | Instance index order | `instances[].index` refers to positions in the **DICOM-order volume** (`pixel.shape_dicom`, before reorientation), never to NIfTI/RAS order. Mapping to NIfTI goes through `ornt_transform` only. |
 | Original strings | Store the **original string** of every text-VR element (DS/IS, but also PN/LO/CS/UI/…) whose raw bytes a DICOM JSON round trip would not reproduce, in an `original_strings` side map in `tether.json`, so round trips stay byte-identical per element rather than merely equal in value. Extended from DS/IS-only on 2026-10-08 after whitespace-only PN values (GE) came back empty. |
 | Identity (compare) | Instances paired by SOPInstanceUID. Non-sequence elements: same VR **and same encoded value bytes**; sequences compared item by item; PixelData: equal **decoded arrays** (raw byte differences are reported as notes only). Not compared: defined/undefined lengths, element order, preamble, file meta group length. Reports never contain values, UIDs or file names. |
 | Human metadata | Separate BIDS-style `*.json` sidecar (keyword: value) — readable, not used for recovery. |
-| Naming | BIDS-inspired key-value filenames with custom entities, always including the series number: `sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz`, folder `sub-…/ses-…/anat/`. **No body-part entity** (decided 2026-10-07; BodyPartExamined stays in manifest and sidecar). `acq-` = SeriesDescription reduced to letters/digits, camelCase, ≤24 chars. Suffix `T1w`/`T2w`/`PDw`/`FLAIR` from description keywords (T2* excluded), else TR/TE/TI rules, else `MR`; rule recorded in the sidecar. |
+| Naming | BIDS-inspired key-value filenames with custom entities, always including the series number: `sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz`, folder `sub-…/ses-…/anat/`. **No body-part entity** (decided 2026-10-07; BodyPartExamined stays in manifest and sidecar). `acq-` = **ProtocolName**, else SeriesDescription (changed 2026-10-08: ProtocolName is filled more consistently, e.g. Philips without description, and carries no reconstruction suffixes; it is Type 3, so the fallback stays), reduced to letters/digits, camelCase, ≤24 chars; source recorded in the sidecar (`DcmTether.AcqSource`). Already converted series keep their old names (re-runs skip them). Suffix `T1w`/`T2w`/`PDw`/`FLAIR` from keywords in the same text (T2* excluded), else TR/TE/TI rules, else `MR`; rule recorded in the sidecar. Diffusion series: suffix `dwi`, folder `dwi/`. Multi-plane series: `chunk-<n>` entity after `ser-` (decided 2026-10-08). |
+| 4D series | **One 4D NIfTI per series** (decided 2026-10-08), instances indexed `[slice, volume]`. Volumes are told apart by the first attribute in `scan.VOLUME_KEYS` (EchoNumbers, TemporalPositionIdentifier, DiffusionBValue + GradientOrientation, TemporalPositionIndex, AcquisitionNumber, EffectiveEchoTime, ComplexImageComponent, EchoTime, InversionTime, TriggerTime) whose values are distinct at every slice position, with the same set at every position; last resort (4c): all candidates that vary, combined (e.g. time point × echo); otherwise `unsupported` (never guessed). Volumes are ordered by acquisition (lowest InstanceNumber, then frame), then by key value. |
+| Enhanced MR | (Phase 4c, decided 2026-10-08) Enhanced MR Image Storage is classified **frame by frame**: each frame is one image whose geometry, rescale and echo/time/diffusion values come from a *frame view* (top-level elements + shared functional groups + that frame's per-frame groups, `dcmtether.frames`), so 3D/4D/split rules apply unchanged; one series may span several enhanced files. tether.json keeps the functional groups as they are (no restructuring) and lists per file `frames: [[slice(, volume)], …]` in frame order (format v3; v2 files stay readable). Multi-frame classic MR and Legacy Converted Enhanced MR stay `unsupported`. |
+| Split series | Several image planes in one series (localizers) → one NIfTI per plane (`chunk-<n>`, InstanceNumber order) if **every** plane is a supported stack; otherwise the whole series is `unsupported`. |
+| Compressed TS | (Phase 4b, decided 2026-10-08) Lossless syntaxes only: RLE Lossless, JPEG Lossless (Process 14, incl. SV1), JPEG-LS Lossless, JPEG 2000 Lossless (`scan.LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES`), decoded with `pylibjpeg` (+ libjpeg/openjpeg/rle plugins, runtime dependencies). `to-dcm` writes **Explicit VR Little Endian** with native PixelData (OW, OB for 8-bit); tether.json keeps the source TS. `compare` reports exactly this change as a note ("changed from … (lossless)"), not a difference; all elements and decoded pixels must still match; any other TS change is a difference. Lossy (JPEG baseline/extended, JPEG-LS near-lossless, JPEG 2000) stays `unsupported` with its own reason (decoders may differ). |
 | Collisions | Never silent. Existing target → error (or explicit suffix + log). Manifest enforces uniqueness on SeriesInstanceUID. |
 | Manifest | **SQLite** (stdlib, supports in-place status updates for resumable runs; Parquet would add `pyarrow` for little gain). One table per dataset: one row per NIfTI with paths, subject, session, body part, modality, vendor, SOPClassUID, TransferSyntaxUID, SeriesInstanceUID, StudyInstanceUID, source directory, status. |
 | New UIDs | `2.25.<uuid-as-integer>` (no org root needed). Deterministic via `uuid.uuid5(namespace, source_uid + derivation + content_hash)` so identical reruns reproduce UIDs, but **different content always gets a different UID** (reusing a UID for changed data violates DICOM uniqueness and PACS may silently keep only one copy). Note: pydicom's `generate_uid()` uses pydicom's root by default — don't use it as-is. |
@@ -71,7 +75,7 @@ Derivatives later go under `dataset/derivatives/<tool-name>/…` mirroring the s
 
 ```json
 {
-  "format_version": 2,
+  "format_version": 3,
   "tool": { "name": "dcmtether", "version": "0.1.0" },
   "source": {
     "series_instance_uid": "…",
@@ -109,7 +113,7 @@ Notes:
 - `pixel.orientation.from = dicom_rows_columns_slices`: array axes (row index, column index, slice), slices sorted by ascending position along `cross(row_dir, col_dir)` (not acquisition order).
 - `file_name` is the source path relative to the series' source directory (POSIX).
 - `index` is in DICOM volume order (`shape_dicom`), not NIfTI order. It is a list so 4D series fit: `[slice]` for 3D, `[slice, volume]` for multi-echo / DWI / dynamics.
-- Enhanced multi-frame: one instance with N frames; per-frame functional groups stay in `elements` (format may get a `frames` block in Phase 4).
+- Enhanced multi-frame (format v3): an instance has `"frames": [[slice, volume], …]` (one index per frame, frame order) instead of `"index"`; functional groups stay in `elements` unchanged.
 - PixelData (7FE0,0010) is never stored here.
 - An element appears in `shared` only if every instance has it with an equal value.
 - `original_strings` (top level = shared, and per instance): element path → original strings, one
@@ -119,7 +123,7 @@ Notes:
 - `pixel_data_vr`: PixelData is not in the JSON, so its VR (OB/OW) is recorded here.
 - `pixel_data_trailing`: bytes stored after the last pixel (e.g. `MR_small_padded.dcm` has 128),
   other than the normal single pad byte.
-- Format version 2 since Phase 3; `to-dcm` refuses other versions ("re-run to-nii").
+- Format version 3 since Phase 4c (adds `frames`); version 2 documents are still read; `to-dcm` refuses other versions ("re-run to-nii").
 
 ---
 
@@ -166,7 +170,7 @@ Outcome and decisions:
 - **Manifest schema v1** (`manifest.sqlite`): `meta` (schema/tool version, source root, scan time), `series` (one row per SeriesInstanceUID, UNIQUE; ids 1..n in scan order; reasons and geometry as JSON), `instances` (relative POSIX paths), `skipped_files`. Subject/session/NIfTI path columns are added in Phase 2 with a schema bump. An existing manifest is never overwritten; writes go to a `.partial` file first.
 - The target dataset directory is excluded from the walk when it lies inside the source.
 - On the public test data, all MR codec variants share series UIDs, so only the GE ADC series (when scanned on its own) and single Siemens/pydicom MR files are `supported`; everything else is correctly `unsupported`.
-- Note for Phase 4: per-volume rescale in 4D series (Philips) is currently `unsupported`; the splitting policy should allow rescale to vary between volumes but not within one.
+- Note for Phase 4: per-volume rescale in 4D series (Philips) is currently `unsupported`; the splitting policy should allow rescale to vary between volumes but not within one. (Done in 4a.)
 
 ### Phase 2 — Forward: DICOM → NIfTI + metadata
 - Volume assembly from pydicom (own writer, sort by ImagePositionPatient projected on slice normal).
@@ -211,12 +215,39 @@ Outcome and decisions:
 - Test infrastructure: dicom-validator changes pydicom's global validation mode; the `iod_errors` fixture now restores it. `SPECS` moved to `tests/roundtrip.py` (shared round-trip helpers).
 
 ### Phase 4 — Harder inputs
-- Enhanced multi-frame MR (per-frame functional groups).
-- 4D: multi-echo, DWI incl. b-values/gradient directions (needed for ADC; Siemens classic stores these partly in the CSA private header), dynamics.
-- Compressed transfer syntaxes (`pylibjpeg` + plugins): decode to NIfTI; on the way back write an uncompressed TS (record that the TS changed) — compressed originals cannot be byte-identical anyway.
-- Splitting policy for `split` series from Phase 1.
+Split into sub-phases (decided 2026-10-08), one branch/PR each:
+- **4a:** 4D (multi-echo, DWI incl. b-values/gradient directions, dynamics) + splitting policy for `split` series.
+- **4b:** compressed transfer syntaxes (`pylibjpeg` + plugins), lossless only: decode to NIfTI; on the way back write Explicit VR LE and record that the TS changed.
+- **4c:** enhanced multi-frame MR (per-frame functional groups); needs a synthetic generator (no realistic public test data).
 
 **Done when:** each new input type has its own round-trip tests and passes the Phase 3 compare.
+
+**Status 4a: ✅ done (2026-10-08, branch `phase-4a-4d`).** Format + lint clean, 365 tests pass, none skipped.
+Outcome and decisions:
+- 4D series with a volume key are now `supported`; `split` now means "converted as chunks". Scan geometry records `volume_key` (and `parts` for split series); `Series.parts` lists what to convert (instances, `(slice[, volume])` indices, volume key).
+- Rescale and slice-thickness checks moved from the series to each plane/volume.
+- Manifest **schema v3**: new `outputs` table (series id, chunk, NIfTI/tether/sidecar paths, n_volumes); the path columns left `series`. v2 manifests are upgraded in place (paths moved, chunk 1). A series converts all its chunks or none.
+- Sidecar for 4D: values that differ between volumes (TE, rescale, …) and the volume-key attributes go to `DcmTether.PerVolume` (one entry per volume), plus `VolumeKey`; split chunks record `Chunk`. DiffusionGradientOrientation is listed as in DICOM (patient LPS), `null` for b0.
+- Oracle: dcm2niix agrees on oblique dynamic and diffusion series (4D) and on multi-echo per echo (it writes one file per echo). Round trips through `compare` are identical for all 4D kinds (axial/oblique/shuffled), per-volume rescale, localizers and two-plane series.
+- Volume order follows acquisition (lowest InstanceNumber), not key value, so DWI volumes keep the scanner's gradient order.
+
+**Status 4b: ✅ done (2026-10-08, branch `phase-4b-compressed`, stacked on `phase-4a-4d`).** Format + lint clean, 455 tests pass, none skipped.
+Outcome and decisions:
+- Round trips through `compare` are identical (only the transfer-syntax note) for synthetic series in RLE, JPEG-LS and JPEG 2000 (axial, oblique, signed, shuffled, 4D) and for all 16 WG04 lossless MR files (MR1–4 × RLE/JPLL/JLSL/J2KR) plus the pydicom `MR_small` RLE/J2K/JPEG-LS variants and `MR2_J2KR`.
+- Oracle: each WG04 lossless file gives exactly the same NIfTI (voxels and affine) as its uncompressed `REF/MR*_UNC` original.
+- Decompressed files give the same dicom-validator errors as their compressed originals.
+- `pixel_data_trailing` does not apply to encapsulated data; `pixel_data_vr` is now the VR of the native PixelData to write.
+- `to-dcm` prints the transfer syntax change; `compare` prints each kind of note once with an instance count.
+- Not supported (no test data): Deflated Explicit VR LE, HTJ2K. pydicom's `compress()`/`decompress()` create new SOPInstanceUIDs by default; tests pass `generate_instance_uid=False` (the product never uses them).
+
+**Status 4c: ✅ done (2026-10-08, branch `phase-4c-enhanced`, stacked on `phase-4b-compressed`).** Format + lint clean, 487 tests pass, none skipped.
+Outcome and decisions:
+- Real data (dcm_qa_enh) converts and round-trips identically (no differences, no notes): Canon DTI (520 frames, 13 volumes by b-value/gradient), Philips T1 (magnitude/phase by ComplexImageComponent, per-volume rescale), Philips field map (2 echoes), Philips fMRI (4 time points × 2 echoes by the combined key), Siemens XA10 (4 files × 6 frames, time points by TemporalPositionIndex). Rebuilt Siemens files give the same dicom-validator errors as the originals.
+- Synthetic Enhanced MR (`synthetic.make_enhanced`, 1 or several files) passes world-space ground truth and round trips for 3D and all 4D kinds, per-volume rescale, and RLE compression.
+- `scan.read_instances` returns one `Instance` per frame (`frame` = index); counts in the scan output and manifest (`n_instances`, `instances` rows) stay per file.
+- The combined key lists every varying candidate (for Philips fMRI five keywords incl. redundant ones); fine for assignment, verbose in `DcmTether.VolumeKey`.
+- Sidecar: EchoTime falls back to EffectiveEchoTime (enhanced).
+- Philips DWI enhanced (`dcm_qa_philips_dwi/In/enh`) stays unsupported: its series mixes presentation states and raw data with the images.
 
 ### Phase 5 — Derivatives
 - Label-map metadata JSON (segment number → label, SNOMED CT category/type codes, color, algorithm info).
@@ -252,11 +283,13 @@ Outcome and decisions:
 7. **Orientation bugs** are the most likely silent failure. Always verify with the oracle test (world space), the synthetic permutation/flip series, and visual spot checks of a few slices.
 8. **Viewer support.** SEG/Parametric Map work well in 3D Slicer and OHIF; clinical PACS support varies — check the target viewer early.
 9. **Regulatory.** If derivatives ever influence clinical diagnosis, the tool may fall under EU MDR as medical device software. Intended use = research; labeling supports but does not by itself settle this.
-10. **Test data coverage.** `dicom-test-files` has limited multi-slice MRI. Synthetic series (§2) cover geometry; publicly available, de-identified data (e.g. TCIA) may still be needed later for vendor/sequence coverage.
+10. **Test data coverage.** `dicom-test-files` has limited multi-slice MRI. Synthetic series (§2) cover geometry; the dcm_qa repositories (since 2026-10-08) add real Siemens/GE/Philips/Canon series (multi-echo, fMRI, DWI, enhanced, transfer syntaxes). Larger dcm_qa sets (`dcm_qa_ge`, `dcm_qa_toshiba`, `dcm_qa_dti`, …) can be pinned when a phase needs them.
 11. **UID reuse.** Deterministic UIDs without a content hash would give changed derivatives the same UID; mitigated by the §2 rule.
 12. **to-nii does not check its own output** (postponed, decided 2026-10-08). A JSON-model loss nobody anticipated only shows up when `to-dcm` + `compare` are run. Possible later step: rebuild each series in memory during `to-nii` and fail it on any difference (roughly doubles conversion time).
 13. **Pixel raw bytes vs decoded values.** Bits above BitsStored (old overlay-in-pixel-data, scanner junk) are lost, because the NIfTI holds decoded values. Signed data with BitsStored < BitsAllocated may also be re-encoded with full sign extension. The decoded pixels stay equal; compare reports it as a note.
 14. **File meta strings** are not captured into `original_strings` (pydicom converts group 0002 while reading). Every test file round-trips anyway; a real-data failure here would show up in compare.
+15. **Vendor-private 4D keys.** Volumes are only told apart by standard attributes. Siemens classic DWI keeps b-values/gradients in the CSA header and GE in private tags (0043,1039), so such series are `unsupported` ("no attribute tells them apart") until vendor keys are added. No `.bval`/`.bvec` export yet (needed for ADC in Phase 5).
+16. **to-dcm output folders.** File names in tether.json are relative to the series' source folder, so rebuilding several series into one OUTPUT can collide (e.g. two `IM_0001`); use one OUTPUT per series. Chunks of one series can share an OUTPUT.
 
 ---
 
@@ -269,7 +302,8 @@ Outcome and decisions:
 - [x] Subject mapping → none: labels come from PatientName/StudyDate (§2, decided 2026-10-07).
 - [ ] Anonymized inputs (empty PatientName) currently fail naming. Fallback wanted (e.g. sanitized PatientID)?
 - [ ] Label-map metadata schema for SEG (reuse dcmqi's JSON template format?).
-- [ ] Is additional public test data (TCIA) acceptable, and which collections?
+- [x] Additional public test data → dcm_qa repositories (decided 2026-10-08); TCIA not needed for now.
+- [ ] GE fMRI (`dcm_qa_nih`): volumes differ only by InstanceNumber. Allow InstanceNumber order as a last-resort volume key?
 
 ---
 

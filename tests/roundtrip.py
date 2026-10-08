@@ -40,18 +40,26 @@ def manifest_rows(dataset: Path) -> list[dict]:
         return [dict(r) for r in db.execute("SELECT * FROM series ORDER BY id")]
 
 
+def output_rows(dataset: Path) -> list[dict]:
+    """One row per written NIfTI, ordered by series id and chunk."""
+    with sqlite3.connect(dataset / "manifest.sqlite") as db:
+        db.row_factory = sqlite3.Row
+        return [dict(r) for r in db.execute("SELECT * FROM outputs ORDER BY series_id, chunk")]
+
+
 def forward(source: Path, dataset: Path) -> list[dict]:
-    """scan + to-nii; every series must convert. Returns the manifest rows."""
+    """scan + to-nii; every series must convert. Returns the output rows."""
     write_manifest(dataset, scan(source))
     outcomes = convert_dataset(dataset)
     assert outcomes and all(o.ok for o in outcomes), [o.message for o in outcomes]
-    return manifest_rows(dataset)
+    return output_rows(dataset)
 
 
 def round_trip(source: Path, work: Path) -> Report:
-    """One series in ``source`` → NIfTI + tether → DICOM; compare with the source files."""
-    [row] = forward(source, work / "dataset")
+    """One series in ``source`` → NIfTI(s) + tether → DICOM; compare with the source files."""
     rebuilt = work / "rebuilt"
-    written = to_dicom(work / "dataset" / row["nifti_path"], rebuilt)
+    written = []
+    for row in forward(source, work / "dataset"):
+        written += to_dicom(work / "dataset" / row["nifti_path"], rebuilt)
     assert sorted(written) == dicom_files(rebuilt)
     return compare_series(dicom_files(source), dicom_files(rebuilt))

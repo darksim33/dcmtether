@@ -7,8 +7,9 @@ import pytest
 from click.testing import CliRunner
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
+from pydicom.uid import ImplicitVRLittleEndian, RLELossless
 from pydicom.valuerep import DS
-from synthetic import SeriesSpec, make_series, write_series
+from synthetic import SeriesSpec, compressed, make_series, write_series
 
 from dcmtether.cli import main
 from dcmtether.compare import compare_files, compare_series, dicom_files
@@ -168,3 +169,53 @@ def test_cli_compare_differences(tmp_path):
     assert "  instance 2: PatientName: value differs" in result.output
     _assert_no_values(result.output.splitlines())
     result.output.encode("ascii")
+
+
+# --- transfer syntax changes -------------------------------------------------------------------
+
+
+def _compressed_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Original RLE-compressed; 'rebuilt' = the same files decompressed (Explicit VR LE)."""
+    series = compressed(make_series(SeriesSpec(n_slices=2)), RLELossless)
+    original = tmp_path / "original"
+    write_series(series, original)
+    rebuilt = tmp_path / "rebuilt"
+    shutil.copytree(original, rebuilt)
+    for path in dicom_files(rebuilt):
+        _edit(path, lambda ds: ds.decompress(generate_instance_uid=False))
+    return original, rebuilt
+
+
+def test_lossless_to_uncompressed_is_a_note(tmp_path):
+    original, rebuilt = _compressed_pair(tmp_path)
+    report = _report(original, rebuilt)
+    assert report.identical, report.lines()
+    assert sorted({f"{n.where}: {n.kind}" for n in report.notes}) == [
+        "TransferSyntaxUID: changed from RLE Lossless to Explicit VR Little Endian (lossless)"
+    ]
+
+
+def test_pixel_change_across_transfer_syntax_change_is_a_difference(tmp_path):
+    original, rebuilt = _compressed_pair(tmp_path)
+    _edit(rebuilt / "IM_0001", _set_pixel)
+    assert _report(original, rebuilt).lines() == ["instance 1: PixelData: decoded pixels differ"]
+
+
+def test_other_transfer_syntax_changes_are_differences(tmp_path):
+    original, rebuilt = _pair(tmp_path)
+    for path in dicom_files(rebuilt):
+        _edit(path, lambda ds: setattr(ds.file_meta, "TransferSyntaxUID", ImplicitVRLittleEndian))
+    assert _report(original, rebuilt).lines() == [
+        f"instance {n}: TransferSyntaxUID: value differs" for n in (1, 2, 3)
+    ]
+
+
+def test_cli_compare_groups_notes(tmp_path):
+    original, rebuilt = _compressed_pair(tmp_path)
+    result = CliRunner().invoke(main, ["compare", str(original), str(rebuilt)])
+    assert result.exit_code == 0, result.output
+    assert result.output == (
+        "Identical: 2 instances compared.\n"
+        "  note: TransferSyntaxUID: changed from RLE Lossless to Explicit VR Little Endian "
+        "(lossless) (2 instances)\n"
+    )

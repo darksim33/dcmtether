@@ -9,10 +9,11 @@ from dcmtether import __version__
 from dcmtether.compare import compare_series, dicom_files
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import ManifestError, manifest_path, write_manifest
-from dcmtether.reverse import ReverseError, to_dicom
+from dcmtether.reverse import ReverseError, tether_path_for, to_dicom, transfer_syntax_change
 from dcmtether.scan import Status, plural
 from dcmtether.scan import scan as scan_directory
 from dcmtether.tether import TetherError
+from dcmtether.tether import load as tether_load
 
 #: Exit code for commands that are not implemented yet.
 EXIT_NOT_IMPLEMENTED = 3
@@ -43,7 +44,7 @@ def scan(source: Path, dataset: Path) -> None:
     write_manifest(dataset, result)
 
     # Output names series by manifest id only: no UIDs, descriptions or paths (PHI rules).
-    n_instances = sum(len(s.instances) for s in result.series)
+    n_instances = sum(len(s.files) for s in result.series)  # files, not frames
     click.echo(
         f"Scanned {result.n_files} files: {n_instances} DICOM instances in "
         f"{len(result.series)} series, {plural(len(result.skipped), 'file')} skipped."
@@ -54,7 +55,7 @@ def scan(source: Path, dataset: Path) -> None:
     for series_id, series in enumerate(result.series, start=1):
         if series.status is not Status.SUPPORTED:
             click.echo(
-                f"  series #{series_id} ({plural(len(series.instances), 'instance')}) "
+                f"  series #{series_id} ({plural(len(series.files), 'instance')}) "
                 f"{series.status.value}: {'; '.join(series.reasons)}"
             )
     for reason, n in sorted(Counter(s.reason for s in result.skipped).items()):
@@ -97,9 +98,12 @@ def to_dcm(nifti: Path, output: Path) -> None:
     """
     try:
         written = to_dicom(nifti, output)
+        change = transfer_syntax_change(tether_load(tether_path_for(nifti)))
     except (ReverseError, TetherError) as exc:
         raise click.ClickException(str(exc)) from None
     click.echo(f"Wrote {plural(len(written), 'DICOM file')}.")
+    if change:
+        click.echo(f"Transfer syntax changed from {change[0]} to {change[1]} (lossless).")
 
 
 @main.command()
@@ -118,7 +122,8 @@ def compare(original: Path, rebuilt: Path) -> None:
         click.echo(f"{plural(len(report.differences), 'difference')} in {compared} compared:")
         for line in report.lines():
             click.echo(f"  {line}")
-    for note in report.notes:
-        click.echo(f"  note: {note.line()}")
+    # Notes repeat per instance (e.g. a transfer syntax change): print each kind once.
+    for (where, kind), n in Counter((note.where, note.kind) for note in report.notes).items():
+        click.echo(f"  note: {where}: {kind} ({plural(n, 'instance')})")
     if not report.identical:
         raise click.exceptions.Exit(1)

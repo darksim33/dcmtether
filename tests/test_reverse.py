@@ -1,5 +1,6 @@
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import nibabel as nib
@@ -9,10 +10,28 @@ import pytest
 from click.testing import CliRunner
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
-from pydicom.uid import ImplicitVRLittleEndian
+from pydicom.uid import (
+    UID,
+    ExplicitVRLittleEndian,
+    ImplicitVRLittleEndian,
+    JPEG2000Lossless,
+    JPEGLSLossless,
+    RLELossless,
+)
 from pydicom.valuerep import DS
 from roundtrip import SPECS, forward, round_trip
-from synthetic import SeriesSpec, SyntheticSeries, make_series, write_series
+from synthetic import (
+    VOLUME_KINDS,
+    SeriesSpec,
+    SyntheticSeries,
+    compressed,
+    make_4d,
+    make_enhanced,
+    make_localizer,
+    make_series,
+    make_two_planes,
+    write_series,
+)
 
 from dcmtether import tether
 from dcmtether.cli import main
@@ -42,6 +61,128 @@ def test_round_trip_is_identical(tmp_path, spec):
     report = round_trip(_write(make_series(spec), tmp_path), tmp_path)
     _assert_identical(report)
     assert report.n_compared == spec.n_slices
+
+
+# --- 4D and split series -----------------------------------------------------------------------
+
+KINDS = [k for k in VOLUME_KINDS if k != "none"]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize(
+    "spec",
+    [SeriesSpec(), SeriesSpec(orientation=SPECS["oblique"].orientation), SeriesSpec(shuffle=True)],
+    ids=["axial", "oblique", "shuffled"],
+)
+def test_round_trip_4d(tmp_path, kind, spec):
+    report = round_trip(_write(make_4d(spec, n_volumes=3, kind=kind), tmp_path), tmp_path)
+    _assert_identical(report)
+    assert report.n_compared == 15
+
+
+def test_round_trip_4d_with_per_volume_rescale(tmp_path):
+    series = make_4d(n_volumes=3, volume_rescale=[(1.0, 0.0), (2.0, 0.0), (2.0, -5.0)])
+    _assert_identical(round_trip(_write(series, tmp_path), tmp_path))
+
+
+@pytest.mark.parametrize("make", [make_localizer, make_two_planes], ids=["localizer", "two-planes"])
+def test_round_trip_split_series(tmp_path, make):
+    series = make()
+    report = round_trip(_write(series, tmp_path), tmp_path)
+    _assert_identical(report)
+    assert report.n_compared == len(series.datasets)
+
+
+# --- compressed sources (written back as Explicit VR Little Endian) -----------------------------
+
+CODECS = {"rle": RLELossless, "jls": JPEGLSLossless, "j2k": JPEG2000Lossless}
+TS_NOTE = "changed from {} to Explicit VR Little Endian (lossless)"
+
+
+def _assert_identical_but_decompressed(report, transfer_syntax) -> None:
+    assert report.identical, report.lines()
+    assert {f"{n.where}: {n.kind}" for n in report.notes} == {
+        "TransferSyntaxUID: " + TS_NOTE.format(UID(transfer_syntax).name)
+    }
+
+
+@pytest.mark.parametrize("codec", CODECS.values(), ids=CODECS.keys())
+@pytest.mark.parametrize("spec", ["axial", "oblique", "signed", "shuffled"])
+def test_round_trip_compressed(tmp_path, codec, spec):
+    matrix = {"rows": 32, "columns": 40, "n_slices": 3} if codec == JPEG2000Lossless else {}
+    series = compressed(make_series(replace(SPECS[spec], **matrix)), codec)
+    report = round_trip(_write(series, tmp_path), tmp_path)
+    _assert_identical_but_decompressed(report, codec)
+    for path in dicom_files(tmp_path / "rebuilt"):
+        meta = pydicom.dcmread(path, stop_before_pixels=True).file_meta
+        assert meta.TransferSyntaxUID == ExplicitVRLittleEndian
+
+
+def test_round_trip_compressed_4d(tmp_path):
+    series = compressed(make_4d(n_volumes=2, kind="echo"), RLELossless)
+    _assert_identical_but_decompressed(round_trip(_write(series, tmp_path), tmp_path), RLELossless)
+
+
+COMPRESSED_REAL_FILES = [
+    *(
+        f"WG04/{codec}/MR{n}_{codec}"
+        for codec in ("RLE", "JPLL", "JLSL", "J2KR")
+        for n in range(1, 5)
+    ),
+    "pydicom/MR_small_RLE.dcm",
+    "pydicom/MR_small_jp2klossless.dcm",
+    "pydicom/MR_small_jpeg_ls_lossless.dcm",
+    "pydicom/MR2_J2KR.dcm",
+]
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("name", COMPRESSED_REAL_FILES)
+def test_round_trip_compressed_real_file(tmp_path, test_file, name):
+    source = tmp_path / "src" / "series"
+    source.mkdir(parents=True)
+    shutil.copy(test_file(name), source / "file.dcm")
+    transfer_syntax = pydicom.dcmread(source / "file.dcm", stop_before_pixels=True).file_meta
+    report = round_trip(tmp_path / "src", tmp_path)
+    _assert_identical_but_decompressed(report, transfer_syntax.TransferSyntaxUID)
+
+
+def test_cli_to_dcm_reports_the_transfer_syntax_change(tmp_path):
+    series = compressed(make_series(SeriesSpec(n_slices=2)), RLELossless)
+    [row] = forward(_write(series, tmp_path), tmp_path / "dataset")
+    result = CliRunner().invoke(
+        main, ["to-dcm", str(tmp_path / "dataset" / row["nifti_path"]), str(tmp_path / "out")]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output == (
+        "Wrote 2 DICOM files.\n"
+        "Transfer syntax changed from RLE Lossless to Explicit VR Little Endian (lossless).\n"
+    )
+
+
+# --- enhanced multi-frame ----------------------------------------------------------------------
+
+
+ENHANCED_CASES = [(None, 1)] + [(kind, n) for kind in KINDS for n in (1, 3)]  # 4D: 3 volumes
+
+
+@pytest.mark.parametrize(("kind", "n_files"), ENHANCED_CASES)
+def test_round_trip_enhanced(tmp_path, kind, n_files):
+    classic = make_series() if kind is None else make_4d(kind=kind)
+    series = make_enhanced(classic, n_files=n_files)
+    report = round_trip(_write(series, tmp_path), tmp_path)
+    _assert_identical(report)
+    assert report.n_compared == n_files
+
+
+def test_round_trip_enhanced_with_per_volume_rescale(tmp_path):
+    classic = make_4d(n_volumes=3, volume_rescale=[(1.0, 0.0), (2.0, 0.0), (2.0, -5.0)])
+    _assert_identical(round_trip(_write(make_enhanced(classic), tmp_path), tmp_path))
+
+
+def test_round_trip_enhanced_compressed(tmp_path):
+    series = compressed(make_enhanced(make_4d(kind="dynamic")), RLELossless)
+    _assert_identical_but_decompressed(round_trip(_write(series, tmp_path), tmp_path), RLELossless)
 
 
 def test_round_trip_with_uniform_rescale(tmp_path):
@@ -255,6 +396,16 @@ def test_rebuilt_ge_files_validate_like_originals(tmp_path, test_file, iod_error
         assert iod_errors(rebuilt) == iod_errors(original)
 
 
+@pytest.mark.network
+@pytest.mark.parametrize("name", ["WG04/JPLL/MR1_JPLL", "WG04/J2KR/MR3_J2KR"])
+def test_decompressed_files_validate_like_originals(tmp_path, test_file, iod_errors, name):
+    source = tmp_path / "src" / "series"
+    source.mkdir(parents=True)
+    shutil.copy(test_file(name), source / "file.dcm")
+    [(original, rebuilt)] = _rebuilt_pairs(tmp_path / "src", tmp_path)
+    assert iod_errors(rebuilt) == iod_errors(original)
+
+
 # --- safety ------------------------------------------------------------------------------------
 
 
@@ -349,6 +500,15 @@ def test_affine_mismatch_is_an_error(tmp_path, converted):
     _replace_nifti(converted, np.asarray(img.dataobj.get_unscaled()), affine)
     with pytest.raises(ReverseError, match="affine"):
         to_dicom(converted, tmp_path / "out")
+
+
+def test_4d_volume_count_mismatch_is_an_error(tmp_path):
+    [row] = forward(_write(make_4d(n_volumes=3), tmp_path), tmp_path / "dataset")
+    nifti = tmp_path / "dataset" / row["nifti_path"]
+    img = nib.load(nifti)
+    _replace_nifti(nifti, np.asarray(img.dataobj.get_unscaled())[..., :2], img.affine)
+    with pytest.raises(ReverseError, match="shape"):
+        to_dicom(nifti, tmp_path / "out")
 
 
 def test_scaling_mismatch_is_an_error(tmp_path, converted):

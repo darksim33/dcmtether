@@ -16,11 +16,12 @@ import pydicom
 from nibabel.openers import ImageOpener
 from nibabel.volumeutils import array_to_file
 
-from dcmtether import __version__, manifest, naming, orientation, tether
+from dcmtether import __version__, frames, manifest, naming, orientation, tether
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import Series, Status, classify, read_instance
+from dcmtether.scan import Part, Series, Status, classify, read_instances
 
 DATATYPE_DIR = "anat"
+DWI_DIR = "dwi"
 NIFTI_SUFFIX = ".nii.gz"
 _NIFTI1_DATA_OFFSET = 352
 SIDECAR_SUFFIX = ".json"
@@ -43,9 +44,15 @@ class LabelInput:
     study_time: str | None
     series_number: int | None
     series_description: str | None
+    protocol_name: str | None
     repetition_time: float | None
     echo_time: float | None
     inversion_time: float | None
+    #: The scan found diffusion volumes (from the manifest geometry, not the header).
+    diffusion: bool = False
+
+
+DWI_SUFFIX = naming.Suffix("dwi", "diffusion volumes")
 
 
 @dataclass(frozen=True)
@@ -53,9 +60,23 @@ class Planned:
     series_id: int
     subject: str | None = None
     session: str | None = None
+    #: File stem without chunk; also what name clashes are checked on.
     stem: str | None = None
     suffix: naming.Suffix | None = None
     error: str | None = None
+    ser: str | None = None
+    acq: str | None = None
+    #: Keyword the acq- entity and suffix keywords came from (ProtocolName/SeriesDescription).
+    acq_source: str | None = None
+
+    @property
+    def datatype(self) -> str:
+        return DWI_DIR if self.suffix == DWI_SUFFIX else DATATYPE_DIR
+
+    def stem_for(self, chunk: int | None) -> str:
+        return naming.file_stem(
+            self.subject, self.session, self.ser, self.suffix.value, self.acq, chunk
+        )
 
 
 def _float(ds: pydicom.Dataset, keyword: str) -> float | None:
@@ -66,7 +87,7 @@ def _float(ds: pydicom.Dataset, keyword: str) -> float | None:
         return None
 
 
-def read_label_input(series_id: int, path: Path) -> LabelInput:
+def read_label_input(series_id: int, path: Path, diffusion: bool = False) -> LabelInput:
     with quiet_pydicom():
         ds = pydicom.dcmread(path, stop_before_pixels=True)
         series_number = ds.get("SeriesNumber")
@@ -79,9 +100,11 @@ def read_label_input(series_id: int, path: Path) -> LabelInput:
             study_time=str(ds.get("StudyTime", "")) or None,
             series_number=int(series_number) if series_number not in (None, "") else None,
             series_description=str(ds.get("SeriesDescription", "")) or None,
+            protocol_name=str(ds.get("ProtocolName", "")) or None,
             repetition_time=_float(ds, "RepetitionTime"),
             echo_time=_float(ds, "EchoTime"),
             inversion_time=_float(ds, "InversionTime"),
+            diffusion=diffusion,
         )
 
 
@@ -155,17 +178,19 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
         except naming.LabelError as exc:
             errors[sid] = str(exc)
             continue
-        suffix = naming.contrast_suffix(
-            item.series_description, item.repetition_time, item.echo_time, item.inversion_time
+        text, acq_source = naming.naming_text(item.protocol_name, item.series_description)
+        suffix = (
+            DWI_SUFFIX
+            if item.diffusion
+            else naming.contrast_suffix(
+                text, item.repetition_time, item.echo_time, item.inversion_time
+            )
         )
-        stem = naming.file_stem(
-            subjects[sid],
-            sessions[sid],
-            ser,
-            suffix.value,
-            naming.acq_label(item.series_description),
+        acq = naming.acq_label(text)
+        stem = naming.file_stem(subjects[sid], sessions[sid], ser, suffix.value, acq)
+        planned[sid] = Planned(
+            sid, subjects[sid], sessions[sid], stem, suffix, ser=ser, acq=acq, acq_source=acq_source
         )
-        planned[sid] = Planned(sid, subjects[sid], sessions[sid], stem, suffix)
         stems[stem].append(sid)
     for ids in stems.values():
         if len(ids) > 1:
@@ -183,24 +208,29 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
 
 @dataclass
 class Volume:
-    datasets: list[pydicom.Dataset]  # sorted along the slice normal
-    strings: list[tether.Strings]  # original DS/IS strings, same order
-    data: np.ndarray  # DICOM order (rows, columns, slices), raw stored values
+    datasets: list[pydicom.Dataset]  # one per file, in order of their first image
+    strings: list[tether.Strings]  # original strings, per file
+    #: Per file: {"index": [...]} (classic) or {"frames": [[...], ...]} (multi-frame).
+    layouts: list[dict]
+    views: list[pydicom.Dataset]  # one per image (frame), part order
+    indices: list[tuple[int, ...]]  # (slice,) or (slice, volume), per image
+    data: np.ndarray  # DICOM order (rows, columns, slices[, volumes]), raw stored values
     affine_lps: np.ndarray
 
 
-def _revalidate(paths: list[Path]) -> None:
-    """The files must still form the series that was classified as supported."""
+def _revalidate(paths: list[Path]) -> Series:
+    """The files must still form the series that was classified as convertible."""
     instances = []
     for path in paths:
-        result = read_instance(path)
-        if not hasattr(result, "series_instance_uid"):
+        result = read_instances(path)
+        if not isinstance(result, list):
             raise ConversionError(f"source file no longer readable: {result.reason}")
-        instances.append(result)
+        instances.extend(result)
     series = Series(instances[0].series_instance_uid, instances)
     classify(series)
-    if series.status is not Status.SUPPORTED or len({i.series_instance_uid for i in instances}) > 1:
+    if series.status is Status.UNSUPPORTED or len({i.series_instance_uid for i in instances}) > 1:
         raise ConversionError("series changed since scan: " + "; ".join(series.reasons))
+    return series
 
 
 def volume_affine(datasets: list[pydicom.Dataset]) -> np.ndarray:
@@ -217,32 +247,66 @@ def volume_affine(datasets: list[pydicom.Dataset]) -> np.ndarray:
     )
 
 
-def assemble(paths: list[Path]) -> Volume:
-    _revalidate(paths)
+def first_volume(datasets: list, indices: list) -> list:
+    """The images (datasets or frame views) of volume 0 (all of them for 3D), in slice order."""
+    chosen = [
+        (index[0], ds)
+        for ds, index in zip(datasets, indices, strict=True)
+        if index[1:] in ((), (0,))
+    ]
+    return [ds for _, ds in sorted(chosen, key=lambda item: item[0])]
+
+
+def assemble(part: Part) -> Volume:
     with quiet_pydicom():
-        datasets = [pydicom.dcmread(p) for p in paths]
-        # Before anything touches DS/IS elements: conversion loses their original strings.
+        paths = list(dict.fromkeys(i.path for i in part.instances))
+        datasets = [pydicom.dcmread(path) for path in paths]
+        # Before anything touches the elements: conversion loses their original strings.
         strings = [tether.capture_strings(ds) for ds in datasets]
-        normal = orientation.slice_normal(datasets[0].ImageOrientationPatient)
-        order = sorted(
-            range(len(datasets)),
-            key=lambda n: float(
-                np.dot(np.asarray(datasets[n].ImagePositionPatient, float), normal)
-            ),
-        )
-        datasets = [datasets[n] for n in order]
-        strings = [strings[n] for n in order]
-        data = np.stack([ds.pixel_array for ds in datasets], axis=-1)
-        affine = volume_affine(datasets)
-    return Volume(datasets, strings, data, affine)
+        by_path = dict(zip(paths, datasets, strict=True))
+        pixels = {path: ds.pixel_array for path, ds in by_path.items()}
+        all_views = {path: frames.frame_views(ds) for path, ds in by_path.items()}
+
+        planes, views = [], []
+        frame_indices: dict[Path, dict[int, list[int]]] = {path: {} for path in paths}
+        for inst, index in zip(part.instances, part.indices, strict=True):
+            array = pixels[inst.path]
+            frame = inst.frame or 0
+            planes.append(array[frame] if array.ndim == 3 else array)
+            views.append(all_views[inst.path][frame])
+            frame_indices[inst.path][frame] = list(index)
+        multi_frame = {i.path: i.frame is not None for i in part.instances}
+        layouts = []
+        for path in paths:
+            by_frame = frame_indices[path]
+            if not multi_frame[path]:
+                layouts.append({"index": by_frame[0]})
+                continue
+            if sorted(by_frame) != list(range(len(all_views[path]))):
+                raise ConversionError("not every frame of a multi-frame instance is used")
+            layouts.append({"frames": [by_frame[n] for n in sorted(by_frame)]})
+
+        n_slices = 1 + max(index[0] for index in part.indices)
+        shape = (*planes[0].shape, n_slices) + ((part.n_volumes,) if part.volume_key else ())
+        # Native byte order: pixel_array of big-endian files is big-endian (e.g. ">i2").
+        data = np.empty(shape, dtype=planes[0].dtype.newbyteorder("="))
+        for plane, index in zip(planes, part.indices, strict=True):
+            data[(slice(None), slice(None), *index)] = plane
+        affine = volume_affine(first_volume(views, part.indices))
+    return Volume(datasets, strings, layouts, views, list(part.indices), data, affine)
 
 
-def rescale(datasets: list[pydicom.Dataset]) -> tuple[float, float] | None:
-    """Uniform (slope, intercept) of the series, ``None`` if absent (scan rejects non-uniform)."""
-    first = datasets[0]
-    if "RescaleSlope" not in first and "RescaleIntercept" not in first:
+def nifti_scaling(datasets: list[pydicom.Dataset]) -> tuple[float, float] | None:
+    """(slope, intercept) for scl_slope/scl_inter: the series' uniform DICOM rescale.
+
+    ``None`` if there is none, or if it differs between volumes (NIfTI has one global scaling;
+    the values then live in tether.json and the sidecar only).
+    """
+    pairs = {(_float(ds, "RescaleSlope"), _float(ds, "RescaleIntercept")) for ds in datasets}
+    if len(pairs) != 1 or pairs == {(None, None)}:
         return None
-    return float(first.get("RescaleSlope", 1.0)), float(first.get("RescaleIntercept", 0.0))
+    slope, intercept = pairs.pop()
+    return (1.0 if slope is None else slope, 0.0 if intercept is None else intercept)
 
 
 def write_nifti(path: Path, data: np.ndarray, affine: np.ndarray, scaling=None) -> None:
@@ -291,6 +355,7 @@ _SIDECAR_KEYWORDS = [  # (DICOM keyword, BIDS key, scale)
     ("SliceThickness", "SliceThickness", None),
     ("SpacingBetweenSlices", "SpacingBetweenSlices", None),
     ("EchoTime", "EchoTime", 1e-3),  # BIDS: seconds
+    ("EffectiveEchoTime", "EchoTime", 1e-3),  # Enhanced MR (MREchoSequence); used if no EchoTime
     ("RepetitionTime", "RepetitionTime", 1e-3),
     ("InversionTime", "InversionTime", 1e-3),
     ("FlipAngle", "FlipAngle", None),
@@ -315,19 +380,60 @@ def _plain(value):
     return str(value)
 
 
-def sidecar(first: pydicom.Dataset, suffix: naming.Suffix) -> dict:
-    """Readable metadata (keyword: value). Not used for recovery; no patient identifiers."""
-    out = {}
+def _sidecar_value(ds: pydicom.Dataset, keyword: str, scale: float | None):
+    value = ds.get(keyword)
+    if value is None or value == "":
+        return None
+    value = _plain(value)
+    if scale is not None:
+        value = round(float(value) * scale, 9)
+    return value
+
+
+def sidecar(
+    datasets: list[pydicom.Dataset],
+    indices: list[tuple[int, ...]],
+    suffix: naming.Suffix,
+    volume_key: tuple[str, ...] = (),
+    chunk: int | None = None,
+    acq_source: str | None = None,
+) -> dict:
+    """Readable metadata (keyword: value). Not used for recovery; no patient identifiers.
+
+    ``datasets`` are the images (classic datasets or enhanced frame views, see
+    :mod:`dcmtether.frames`). Values come from the first image of each volume; values that
+    differ between volumes go to ``DcmTether.PerVolume`` (one entry per volume) instead of the
+    top level.
+    """
+    firsts: dict[int, pydicom.Dataset] = {}
+    for ds, index in zip(datasets, indices, strict=True):
+        firsts.setdefault(index[1] if len(index) > 1 else 0, ds)
+    volumes = [firsts[v] for v in sorted(firsts)]
+    out: dict = {}
+    per_volume: dict = {}
     with quiet_pydicom():
+        for keyword in volume_key:
+            per_volume[keyword] = [_sidecar_value(ds, keyword, None) for ds in volumes]
         for keyword, key, scale in _SIDECAR_KEYWORDS:
-            value = first.get(keyword)
-            if value is None or value == "":
+            if key in out or key in per_volume:
+                continue  # an earlier keyword already filled it
+            values = [_sidecar_value(ds, keyword, scale) for ds in volumes]
+            if all(v is None for v in values):
                 continue
-            value = _plain(value)
-            if scale is not None:
-                value = round(float(value) * scale, 9)
-            out[key] = value
-    out["DcmTether"] = {"Version": __version__, "SuffixRule": suffix.rule}
+            if all(v == values[0] for v in values):
+                if values[0] is not None:
+                    out[key] = values[0]
+            else:
+                per_volume[key] = values
+    info: dict = {"Version": __version__, "SuffixRule": suffix.rule}
+    if acq_source is not None:
+        info["AcqSource"] = acq_source
+    if chunk is not None:
+        info["Chunk"] = chunk
+    if volume_key:
+        info["VolumeKey"] = list(volume_key)
+        info["PerVolume"] = per_volume
+    out["DcmTether"] = info
     return out
 
 
@@ -341,43 +447,66 @@ class Outcome:
     message: str = ""
 
 
-def _convert_one(
-    paths: list[Path], source_dir: Path, plan: Planned, dataset: Path
-) -> tuple[Path, Path, Path]:
-    out_dir = dataset / f"sub-{plan.subject}" / f"ses-{plan.session}" / DATATYPE_DIR
-    nifti_path = out_dir / f"{plan.stem}{NIFTI_SUFFIX}"
-    tether_path = out_dir / f"{plan.stem}{tether.TETHER_SUFFIX}"
-    sidecar_path = out_dir / f"{plan.stem}{SIDECAR_SUFFIX}"
+def _convert_part(
+    part: Part, source_dir: Path, plan: Planned, dataset: Path, chunk: int | None
+) -> tuple[Path, ...]:
+    stem = plan.stem_for(chunk)
+    out_dir = dataset / f"sub-{plan.subject}" / f"ses-{plan.session}" / plan.datatype
+    nifti_path = out_dir / f"{stem}{NIFTI_SUFFIX}"
+    tether_path = out_dir / f"{stem}{tether.TETHER_SUFFIX}"
+    sidecar_path = out_dir / f"{stem}{SIDECAR_SUFFIX}"
     targets = (nifti_path, tether_path, sidecar_path)
     if any(t.exists() for t in targets):
         raise ConversionError("output file already exists (collisions are never overwritten)")
 
-    volume = assemble(paths)
+    volume = assemble(part)
     affine_ras = orientation.LPS_TO_RAS @ volume.affine_lps
     data_ras, affine_ras, ornt = orientation.to_closest_ras(volume.data, affine_ras)
     file_names = [Path(ds.filename).relative_to(source_dir).as_posix() for ds in volume.datasets]
     document = tether.build(
         volume.datasets,
         file_names,
-        [[k] for k in range(len(volume.datasets))],
+        volume.layouts,
         volume.data.dtype,
         volume.data.shape,
         ornt,
         volume.strings,
     )
+    info = sidecar(
+        volume.views, volume.indices, plan.suffix, part.volume_key, chunk, plan.acq_source
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        write_nifti(nifti_path, data_ras, affine_ras, rescale(volume.datasets))
+        write_nifti(nifti_path, data_ras, affine_ras, nifti_scaling(volume.views))
         tether.write(document, tether_path)
-        sidecar_path.write_text(
-            json.dumps(sidecar(volume.datasets[0], plan.suffix), indent=2) + "\n", encoding="utf-8"
-        )
+        sidecar_path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     except BaseException:
         for t in targets:
             t.unlink(missing_ok=True)
         raise
     return targets
+
+
+def _convert_series(
+    paths: list[Path], source_dir: Path, plan: Planned, dataset: Path
+) -> list[manifest.Output]:
+    """All parts of a series (one NIfTI each), or nothing: a failure removes earlier parts."""
+    parts = _revalidate(paths).parts
+    outputs: list[manifest.Output] = []
+    written: list[Path] = []
+    try:
+        for n, part in enumerate(parts, start=1):
+            chunk = n if len(parts) > 1 else None
+            targets = _convert_part(part, source_dir, plan, dataset, chunk)
+            written += targets
+            rel = [t.relative_to(dataset).as_posix() for t in targets]
+            outputs.append(manifest.Output(chunk or 1, *rel, n_volumes=part.n_volumes))
+    except BaseException:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
+    return outputs
 
 
 DATASET_README = """\
@@ -392,17 +521,25 @@ it as is. Research use only.
     sub-<subject>/ses-<session>/anat/<stem>.nii.gz       voxels (raw stored values, closest RAS)
     sub-<subject>/ses-<session>/anat/<stem>.json         human-readable sidecar (BIDS-style keys)
     sub-<subject>/ses-<session>/anat/<stem>.tether.json  everything needed to rebuild the DICOM
+    sub-<subject>/ses-<session>/dwi/<stem>.*             the same for diffusion series
     manifest.sqlite                                      scan and conversion records
+
+4D series (multi-echo, diffusion, dynamics) are one 4D NIfTI; values that differ between
+volumes are listed in the sidecar under `DcmTether.PerVolume`.
 
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
 - `sub-`: first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase).
 - `ses-`: StudyDate `YYYYMMDD`; `THHMM` from StudyTime is appended only when one subject has
   several studies on the same day.
-- `acq-` (custom use): SeriesDescription reduced to letters/digits, camelCase, max 24 chars.
+- `acq-` (custom use): ProtocolName (else SeriesDescription) reduced to letters/digits,
+  camelCase, max 24 chars; the source is recorded in the sidecar under `DcmTether.AcqSource`.
 - `ser-` (custom): SeriesNumber, at least two digits.
-- suffix: `T1w`, `T2w`, `PDw`, `FLAIR` from description keywords or TR/TE/TI, else `MR`; the
-  rule used is recorded in the sidecar under `DcmTether.SuffixRule`.
+- `chunk-`: one per image plane when a series holds several (e.g. localizers), numbered in
+  InstanceNumber order.
+- suffix: `dwi` for diffusion series; else `T1w`, `T2w`, `PDw`, `FLAIR` from keywords in the
+  same text as `acq-`, or from TR/TE/TI, else `MR`; the rule used is recorded in the sidecar
+  under `DcmTether.SuffixRule`.
 """
 
 
@@ -412,21 +549,29 @@ def _write_readme(dataset: Path) -> None:
         readme.write_text(DATASET_README, encoding="utf-8")
 
 
+def _is_diffusion(geometry_json: str) -> bool:
+    geometry = json.loads(geometry_json)
+    keys = [geometry.get("volume_key", [])] + [
+        p.get("volume_key", []) for p in geometry.get("parts", [])
+    ]
+    return any("DiffusionBValue" in key for key in keys)
+
+
 def convert_dataset(dataset: Path) -> list[Outcome]:
-    """Convert every supported, not yet converted series in the dataset's manifest."""
+    """Convert every supported or split, not yet converted series in the dataset's manifest."""
     db = manifest.open_manifest(dataset)
     _write_readme(dataset)
     try:
         root = manifest.source_root(db)
         rows = db.execute(
-            "SELECT id, source_dir, conversion_status FROM series WHERE status = 'supported' "
-            "ORDER BY id"
+            "SELECT id, source_dir, conversion_status, geometry FROM series "
+            "WHERE status IN ('supported', 'split') ORDER BY id"
         ).fetchall()
         inputs, outcomes = [], []
         for row in rows:
             first = root / manifest.instance_paths(db, row["id"])[0]
             try:
-                inputs.append(read_label_input(row["id"], first))
+                inputs.append(read_label_input(row["id"], first, _is_diffusion(row["geometry"])))
             except Exception as exc:
                 manifest.record_failed(db, row["id"], f"cannot read header: {exc!r}")
                 outcomes.append(
@@ -445,7 +590,7 @@ def convert_dataset(dataset: Path) -> list[Outcome]:
                 continue
             paths = [root / p for p in manifest.instance_paths(db, sid)]
             try:
-                targets = _convert_one(paths, root / row["source_dir"], plan, dataset)
+                outputs = _convert_series(paths, root / row["source_dir"], plan, dataset)
             except (ConversionError, tether.TetherError) as exc:
                 manifest.record_failed(db, sid, str(exc))
                 outcomes.append(Outcome(sid, False, str(exc)))
@@ -456,8 +601,7 @@ def convert_dataset(dataset: Path) -> list[Outcome]:
                     Outcome(sid, False, f"unexpected error ({type(exc).__name__}), see manifest")
                 )
                 continue
-            rel = [t.relative_to(dataset).as_posix() for t in targets]
-            manifest.record_converted(db, sid, plan.subject, plan.session, *rel)
+            manifest.record_converted(db, sid, plan.subject, plan.session, outputs)
             outcomes.append(Outcome(sid, True))
         return outcomes
     finally:

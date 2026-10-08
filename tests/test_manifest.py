@@ -1,10 +1,11 @@
 import json
 import sqlite3
+from contextlib import closing
 
 import pytest
 from synthetic import SeriesSpec, make_localizer, make_series, write_series
 
-from dcmtether import __version__
+from dcmtether import __version__, manifest
 from dcmtether.manifest import MANIFEST_NAME, SCHEMA_VERSION, write_manifest
 from dcmtether.scan import scan
 
@@ -71,3 +72,36 @@ def test_existing_manifest_is_never_overwritten(tmp_path, scanned):
     with pytest.raises(FileExistsError):
         write_manifest(tmp_path / "dataset", scanned)
     assert path.read_bytes() == before
+
+
+def test_upgrade_from_v2_moves_outputs(tmp_path):
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    with closing(sqlite3.connect(dataset / MANIFEST_NAME)) as db, db:
+        db.executescript(manifest._SCHEMA_V1)
+        db.executescript(manifest._UPGRADES[2])
+        db.execute("INSERT INTO meta VALUES ('schema_version', '2')")
+        db.execute(
+            "INSERT INTO series (id, series_instance_uid, status, reasons, n_instances, "
+            "source_dir, geometry, nifti_path, tether_path, sidecar_path, conversion_status) "
+            "VALUES (1, '2.25.1', 'supported', '[]', 5, 'a', '{}', 'x.nii.gz', 'x.tether.json', "
+            "'x.json', 'converted')"
+        )
+    db = manifest.open_manifest(dataset)
+    try:
+        outputs = _rows(db, "SELECT * FROM outputs")
+        columns = {r["name"] for r in _rows(db, "PRAGMA table_info(series)")}
+    finally:
+        db.close()
+    assert outputs == [
+        {
+            "series_id": 1,
+            "chunk": 1,
+            "nifti_path": "x.nii.gz",
+            "tether_path": "x.tether.json",
+            "sidecar_path": "x.json",
+            "n_volumes": 1,
+        }
+    ]
+    assert "nifti_path" not in columns
+    assert "conversion_status" in columns

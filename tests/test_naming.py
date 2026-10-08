@@ -59,6 +59,23 @@ def test_acq_label(description, label):
 
 
 @pytest.mark.parametrize(
+    ("protocol", "description", "expected"),
+    [
+        ("sag PD fs", "sag PD fs_ND", ("sag PD fs", "ProtocolName")),
+        ("sag PD fs", None, ("sag PD fs", "ProtocolName")),
+        ("", "t1 axial", ("t1 axial", "SeriesDescription")),
+        ("   ", "t1 axial", ("t1 axial", "SeriesDescription")),
+        ("***", "t1 axial", ("t1 axial", "SeriesDescription")),  # nothing usable
+        (None, "t1 axial", ("t1 axial", "SeriesDescription")),
+        (None, "  ", (None, None)),
+        (None, None, (None, None)),
+    ],
+)
+def test_naming_text_prefers_protocol_name(protocol, description, expected):
+    assert naming.naming_text(protocol, description) == expected
+
+
+@pytest.mark.parametrize(
     ("description", "suffix", "rule"),
     [
         ("ax_t1_tse", "T1w", "keyword:t1w"),

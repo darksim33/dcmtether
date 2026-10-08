@@ -144,7 +144,7 @@ def test_rebuild_restores_strings(tmp_path):
 
 def test_document_records_format_and_pixel_data_vr():
     doc = _document(_series(2))
-    assert doc["format_version"] == 2
+    assert doc["format_version"] == 3
     assert doc["pixel"]["pixel_data_vr"] == "OW"
 
 
@@ -156,7 +156,7 @@ def test_nan_cannot_be_stored(tmp_path):
     assert not (tmp_path / "x.tether.json").exists()
 
 
-@pytest.mark.parametrize("version", [1, 3])
+@pytest.mark.parametrize("version", [1, 4])
 def test_load_refuses_other_format_versions(tmp_path, version):
     path = tmp_path / "x.tether.json"
     tether.write(_document(_series(1)), path)
