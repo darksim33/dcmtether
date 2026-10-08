@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phases 0–4 done (4a/4b/4c); next: Phase 5 (derivatives). This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–4 and 5a (DICOM SEG) done; next: Phase 5b (Parametric Map). This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -47,6 +47,7 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | Subject/session labels | **Decided 2026-10-07 (replaces the earlier pseudonymous mapping-file plan):** `sub-` = first 5 letters of family + first 5 of given name (umlauts transliterated, ASCII letters only, CamelCase); `ses-` = StudyDate, plus `THHMM` from StudyTime only when one subject has several studies that day. **The dataset itself therefore identifies patients and must not be shared as is.** Clashes are never silent: different PatientIDs with the same subject label, same-day studies with equal times, or two series mapping to one file name → those series fail with an error naming manifest ids only. Missing PatientName or StudyDate → the series fails (anonymized data cannot be converted under this scheme). |
 | Validation | `dicom-validator` (pure Python, `validate_iods`) in pytest. `dciodvfy` (dicom3tools, C++) as an extra check later via subprocess (a Docker image is a future feature, §5). |
 | Derivatives | `highdicom`: `seg.Segmentation` for label maps, `pm.ParametricMap` for ADC/QSM. Fallback: derived MR images (`ImageType = DERIVED\SECONDARY`) for PACS that can't display SEG/PM. Source datasets are rebuilt in memory from `tether.json` — no original files needed. |
+| SEG (5a) | (decided 2026-10-08) Segment metadata = **dcmqi JSON template** (one label map: `segmentAttributes[0]`); `dcmtether to-seg NIFTI LABELS METADATA OUTPUT`. Label map must lie on the **source NIfTI grid** (same shape/affine; other grids rejected for now); integer values, every value declared; labelIDs renumbered to segment numbers 1..n (reported). **BINARY** segmentation (Segmentation Storage), not the newer LABELMAP SOP class: target viewers are **3D Slicer and clinical PACS** (decided 2026-10-08), whose LABELMAP support is new/uneven. Algorithm version defaults to `unknown`, family to CID 7162 "Artificial Intelligence" (optional template extensions `SegmentAlgorithmVersion`, `SegmentAlgorithmFamilyCodeSequence`). 3D sources only (4D and multi-file enhanced sources rejected). |
 | Research labeling | SeriesDescription suffix "RESEARCH USE ONLY", ContentLabel/ContentDescription (SEG/PM), ImageComments, Manufacturer/SoftwareVersions = this tool + version. No burned-in watermark by default (if ever added: set `BurnedInAnnotation = YES`). |
 | dcm2niix | Not used for the recovery path. Used as a **test oracle** and optionally to produce the human sidecar. dcm2niix does not reorient to RAS, so oracle comparisons are done **in world space** (via the affines / index permutation), never on raw arrays. |
 | Synthetic test data | PHI-free series generated with pydicom from a template: all axis permutations/flips, oblique angles, gaps, mixed thickness, localizers, per-slice rescale. Primary fixture source for Phases 1–3; complements `dicom-test-files`. |
@@ -250,6 +251,8 @@ Outcome and decisions:
 - Philips DWI enhanced (`dcm_qa_philips_dwi/In/enh`) stays unsupported: its series mixes presentation states and raw data with the images.
 
 ### Phase 5 — Derivatives
+Split into sub-phases (decided 2026-10-08), one branch/PR each: **5a** DICOM SEG, **5b** Parametric Map (ADC/QSM), **5c** derived-MR fallback (important: clinical PACS is a target viewer).
+
 - Label-map metadata JSON (segment number → label, SNOMED CT category/type codes, color, algorithm info).
 - NIfTI label map + source pair → DICOM SEG (`highdicom.seg.Segmentation`).
 - NIfTI float map + source pair → Parametric Map (`highdicom.pm.ParametricMap`) with units/real-world value mapping (ADC in mm²/s, QSM in ppm).
@@ -259,6 +262,15 @@ Outcome and decisions:
 - `dicom-validator` (+ optionally `dciodvfy`) on all outputs.
 
 **Done when:** SEG and Parametric Map outputs validate and load in 3D Slicer / OHIF with correct geometry.
+
+**Status 5a: ✅ done (2026-10-08, branch `phase-5a-seg`).** Format + lint clean, 521 tests pass, none skipped. Code: `src/dcmtether/{seg,uids}.py`, `dcmtether to-seg`.
+Outcome and decisions:
+- Geometry is checked independently of our reorientation code: every source pixel is mapped through world space into the label map and compared with highdicom's per-source-instance read-back; and the SEG volume rebuilt from its own plane positions (as viewers do) is compared voxel by voxel. Passes for 7 orientation variants, compressed and enhanced (incl. Philips-style per-frame geometry) sources, and the real GE ADC series.
+- dicom-validator flags the functional group macros of **every** SEG as "unexpected", including dcmqi's reference SEG that 3D Slicer reads (validator limitation); the test asserts our SEG has exactly those errors and no others. Not checked in a viewer from the session: open a generated SEG in 3D Slicer once locally.
+- highdicom compares source orientations exactly and wants multi-frame geometry in the shared groups; the in-memory source copies passed to it get the first image's orientation (differences ≤ `ORIENTATION_TOL`, already accepted by the scan) and per-frame orientation/pixel measures moved to the shared groups. Files and tether.json are never changed.
+- UIDs: `uids.derived_uid` = `2.25.<uuid5(namespace, source series UID | derivation | content hash | role)>`; the content hash covers the SEG pixel array and the canonical metadata JSON. Identical reruns give identical UIDs; any change gives new ones.
+- Research labeling: SeriesDescription suffix `RESEARCH USE ONLY`, ContentDescription "RESEARCH USE ONLY - not for clinical use", Manufacturer/model `dcmtether`, SoftwareVersions = tool version. Existing outputs are never overwritten.
+
 
 ### Phase 6 — Packaging & pipeline
 - Batch mode, resumable runs via the manifest, structured logging (no PHI in logs by default).
@@ -296,12 +308,12 @@ Outcome and decisions:
 ## 7. Open questions
 
 - [ ] Vendor mix (Siemens / Philips / GE) and share of classic vs enhanced multi-frame in the real data → answered by running Phase 1 locally.
-- [ ] Target viewer(s) for derivatives (3D Slicer / OHIF / clinical PACS)?
+- [x] Target viewers → 3D Slicer and clinical PACS (decided 2026-10-08).
 - [x] DS/IS handling → store original strings where they differ (§2).
 - [x] Manifest format → SQLite (§2).
 - [x] Subject mapping → none: labels come from PatientName/StudyDate (§2, decided 2026-10-07).
 - [ ] Anonymized inputs (empty PatientName) currently fail naming. Fallback wanted (e.g. sanitized PatientID)?
-- [ ] Label-map metadata schema for SEG (reuse dcmqi's JSON template format?).
+- [x] Label-map metadata schema → dcmqi JSON template (decided 2026-10-08).
 - [x] Additional public test data → dcm_qa repositories (decided 2026-10-08); TCIA not needed for now.
 - [ ] GE fMRI (`dcm_qa_nih`): volumes differ only by InstanceNumber. Allow InstanceNumber order as a last-resort volume key?
 
