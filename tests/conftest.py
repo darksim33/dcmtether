@@ -8,6 +8,7 @@ from dicom_validator.spec_reader.edition_reader import EditionReader
 from dicom_validator.validator.dicom_file_validator import DicomFileValidator
 from dicom_validator.validator.error_handler import ValidationResultHandlerBase
 from dicom_validator.validator.validation_result import ErrorCode, ValidationResult
+from pydicom import config as pydicom_config
 from pydicom.datadict import keyword_for_tag
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -38,7 +39,12 @@ def iod_errors() -> Callable[[Path], list[IODError]]:
     )
 
     def run(file_path: Path) -> list[IODError]:
-        results: dict[str, ValidationResult] = validator.validate(file_path)
+        # dicom-validator changes pydicom's global validation mode; don't leak it into other tests.
+        previous = pydicom_config.settings.reading_validation_mode
+        try:
+            results: dict[str, ValidationResult] = validator.validate(file_path)
+        finally:
+            pydicom_config.settings.reading_validation_mode = previous
         errors = []
         for result in results.values():
             for module, tag_errors in result.module_errors.items():

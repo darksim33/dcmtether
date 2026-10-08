@@ -45,8 +45,12 @@ def to_closest_ras(
     """
     ornt = orientations.io_orientation(affine_ras)
     data_ras = orientations.apply_orientation(data, ornt)
-    reoriented = affine_ras @ orientations.inv_ornt_aff(ornt, data.shape[:3])
-    return data_ras, reoriented, ornt
+    return data_ras, reoriented_affine(affine_ras, ornt, data.shape[:3]), ornt
+
+
+def reoriented_affine(affine_ras: np.ndarray, ornt: np.ndarray, shape: Sequence[int]) -> np.ndarray:
+    """Affine of the array after applying ``ornt`` to an array of ``shape`` (DICOM order)."""
+    return affine_ras @ orientations.inv_ornt_aff(ornt, tuple(shape[:3]))
 
 
 def invert_ornt(ornt: np.ndarray) -> np.ndarray:

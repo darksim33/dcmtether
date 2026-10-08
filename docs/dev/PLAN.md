@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phases 0–2 done; next: Phase 3 (gate). This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–3 done (gate passed); next: Phase 4. This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -33,7 +33,8 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | Recovery metadata | **DICOM JSON Model** (PS3.18 Annex F) via `Dataset.to_json_dict()` / `Dataset.from_json()`. One `*.tether.json` **per NIfTI** (= per series), structured as file meta + shared + per-instance elements. PixelData excluded. |
 | Shared vs per-instance | An element goes into `shared` only if it is **present in every instance with an equal value**; otherwise it is stored per instance (absence is represented by omission in that instance). |
 | Instance index order | `instances[].index` refers to positions in the **DICOM-order volume** (`pixel.shape_dicom`, before reorientation), never to NIfTI/RAS order. Mapping to NIfTI goes through `ornt_transform` only. |
-| DS/IS strings | Store the **original string** for DS/IS values whose canonical re-formatting differs (side map in `tether.json`), so round trips stay string-identical rather than merely numerically equal. |
+| Original strings | Store the **original string** of every text-VR element (DS/IS, but also PN/LO/CS/UI/…) whose raw bytes a DICOM JSON round trip would not reproduce, in an `original_strings` side map in `tether.json`, so round trips stay byte-identical per element rather than merely equal in value. Extended from DS/IS-only on 2026-10-08 after whitespace-only PN values (GE) came back empty. |
+| Identity (compare) | Instances paired by SOPInstanceUID. Non-sequence elements: same VR **and same encoded value bytes**; sequences compared item by item; PixelData: equal **decoded arrays** (raw byte differences are reported as notes only). Not compared: defined/undefined lengths, element order, preamble, file meta group length. Reports never contain values, UIDs or file names. |
 | Human metadata | Separate BIDS-style `*.json` sidecar (keyword: value) — readable, not used for recovery. |
 | Naming | BIDS-inspired key-value filenames with custom entities, always including the series number: `sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz`, folder `sub-…/ses-…/anat/`. **No body-part entity** (decided 2026-10-07; BodyPartExamined stays in manifest and sidecar). `acq-` = SeriesDescription reduced to letters/digits, camelCase, ≤24 chars. Suffix `T1w`/`T2w`/`PDw`/`FLAIR` from description keywords (T2* excluded), else TR/TE/TI rules, else `MR`; rule recorded in the sidecar. |
 | Collisions | Never silent. Existing target → error (or explicit suffix + log). Manifest enforces uniqueness on SeriesInstanceUID. |
@@ -70,7 +71,7 @@ Derivatives later go under `dataset/derivatives/<tool-name>/…` mirroring the s
 
 ```json
 {
-  "format_version": 1,
+  "format_version": 2,
   "tool": { "name": "dcmtether", "version": "0.1.0" },
   "source": {
     "series_instance_uid": "…",
@@ -80,17 +81,21 @@ Derivatives later go under `dataset/derivatives/<tool-name>/…` mirroring the s
   },
   "file_meta": { "/* DICOM JSON: group 0002 */": {} },
   "shared":    { "/* DICOM JSON: elements identical across all instances */": {} },
+  "original_strings": { "00180080": ["500 "], "00081140/0/00180050": ["3.00"] },
   "instances": [
     {
       "index": [0],
       "file_name": "IM_0001",
       "file_meta": { "/* only elements that differ from shared file_meta, e.g. MediaStorageSOPInstanceUID */": {} },
-      "elements":  { "/* DICOM JSON: elements that differ per instance */": {} }
+      "elements":  { "/* DICOM JSON: elements that differ per instance */": {} },
+      "original_strings": { "/* per-instance original strings */": [] },
+      "pixel_data_trailing": "/* optional, base64: bytes after the last pixel */"
     }
   ],
   "pixel": {
     "dtype": "int16",
     "shape_dicom": [512, 512, 30],
+    "pixel_data_vr": "OW",
     "orientation": {
       "from": "dicom_rows_columns_slices",
       "to": "closest_RAS",
@@ -107,7 +112,14 @@ Notes:
 - Enhanced multi-frame: one instance with N frames; per-frame functional groups stay in `elements` (format may get a `frames` block in Phase 4).
 - PixelData (7FE0,0010) is never stored here.
 - An element appears in `shared` only if every instance has it with an equal value.
-- Planned addition (Phase 3): `ds_is_strings` — original DS/IS strings where re-formatting would change them (see §2).
+- `original_strings` (top level = shared, and per instance): element path → original strings, one
+  per value, exactly as encoded incl. the even-length pad. Path = `TAG`, or `TAG/item/TAG/…` inside
+  sequences. Only elements whose JSON round trip would change the bytes are listed. An element is
+  `shared` only if its JSON value **and** its original strings are equal in every instance.
+- `pixel_data_vr`: PixelData is not in the JSON, so its VR (OB/OW) is recorded here.
+- `pixel_data_trailing`: bytes stored after the last pixel (e.g. `MR_small_padded.dcm` has 128),
+  other than the normal single pad byte.
+- Format version 2 since Phase 3; `to-dcm` refuses other versions ("re-run to-nii").
 
 ---
 
@@ -187,6 +199,17 @@ Outcome and decisions:
 
 **Done when:** round trip is element- and pixel-identical for every `supported` test series. **No phase 4+ work before this passes.**
 
+**Status: ✅ done (2026-10-08, branch `phase-3-reverse`).** Format + lint clean, 318 tests pass, none skipped. Code: `src/dcmtether/{reverse,compare}.py`, `tether.py` (format v2), `dcmtether to-dcm NIFTI OUTPUT`, `dcmtether compare ORIGINAL REBUILT`.
+Outcome and decisions:
+- **Gate result:** byte-identical per element, with no notes, for all 11 synthetic geometry variants, uniform rescale, 12-bit and 8-bit odd-length data, the GE ADC series (20 slices) and every uncompressed public MR file (`MR_small` incl. implicit/big-endian/padded variants, Siemens with overlays + CSA, `MR2_UNCI/UNCR`, WG04 `MR1–4_UNC`). Rebuilt files give the same `dicom-validator` errors as their originals.
+- **JSON-model edge cases** (§6, 3–5), each with a round-trip test: DS/IS formatting (`"500"`, `" 1.0"`, `"0005"`), whitespace-only/trailing-space text, Latin-1, UTF-8 and ISO 2022 (Japanese PN), `US or SS` (signed and unsigned), private tags in explicit and implicit VR, nested/empty sequences and items, empty vs absent. All are lossless.
+- **Original strings** are captured from the raw bytes **right after `dcmread`**, before anything accesses the elements (pydicom strips spaces on conversion). Exception: SpecificCharacterSet, which pydicom converts while reading, so it is not captured (compare still checks it). Capture checks that restoring gives the exact bytes and fails the series otherwise.
+- **NaN/Inf** in FL/FD: the series fails in `to-nii` ("header contains NaN or infinite values"); the JSON is written with `allow_nan=False`.
+- **to-dcm** checks that the NIfTI belongs to the tether.json (dtype, shape after reorientation, affine within 0.01 mm, scl_slope/inter). It rejects unsafe or duplicate file names, never overwrites (`.partial` files, all-or-nothing) and writes the original transfer syntax (big endian byte-swapped). Output files keep their names relative to the series' source directory.
+- **Unused high bits** (above BitsStored) are not kept: the NIfTI holds decoded values. compare reports this as a note, not a difference (test `test_unused_high_bits_are_not_kept`).
+- `MR_truncated.dcm` is classified `supported` by the header-only scan but fails cleanly in `to-nii` (pixel data too short).
+- Test infrastructure: dicom-validator changes pydicom's global validation mode; the `iod_errors` fixture now restores it. `SPECS` moved to `tests/roundtrip.py` (shared round-trip helpers).
+
 ### Phase 4 — Harder inputs
 - Enhanced multi-frame MR (per-frame functional groups).
 - 4D: multi-echo, DWI incl. b-values/gradient directions (needed for ADC; Siemens classic stores these partly in the CSA private header), dynamics.
@@ -231,6 +254,9 @@ Outcome and decisions:
 9. **Regulatory.** If derivatives ever influence clinical diagnosis, the tool may fall under EU MDR as medical device software. Intended use = research; labeling supports but does not by itself settle this.
 10. **Test data coverage.** `dicom-test-files` has limited multi-slice MRI. Synthetic series (§2) cover geometry; publicly available, de-identified data (e.g. TCIA) may still be needed later for vendor/sequence coverage.
 11. **UID reuse.** Deterministic UIDs without a content hash would give changed derivatives the same UID; mitigated by the §2 rule.
+12. **to-nii does not check its own output** (postponed, decided 2026-10-08). A JSON-model loss nobody anticipated only shows up when `to-dcm` + `compare` are run. Possible later step: rebuild each series in memory during `to-nii` and fail it on any difference (roughly doubles conversion time).
+13. **Pixel raw bytes vs decoded values.** Bits above BitsStored (old overlay-in-pixel-data, scanner junk) are lost, because the NIfTI holds decoded values. Signed data with BitsStored < BitsAllocated may also be re-encoded with full sign extension. The decoded pixels stay equal; compare reports it as a note.
+14. **File meta strings** are not captured into `original_strings` (pydicom converts group 0002 while reading). Every test file round-trips anyway; a real-data failure here would show up in compare.
 
 ---
 
