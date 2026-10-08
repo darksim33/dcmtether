@@ -44,7 +44,7 @@ def scan(source: Path, dataset: Path) -> None:
     write_manifest(dataset, result)
 
     # Output names series by manifest id only: no UIDs, descriptions or paths (PHI rules).
-    n_instances = sum(len(s.instances) for s in result.series)
+    n_instances = sum(len(s.files) for s in result.series)  # files, not frames
     click.echo(
         f"Scanned {result.n_files} files: {n_instances} DICOM instances in "
         f"{len(result.series)} series, {plural(len(result.skipped), 'file')} skipped."
@@ -55,7 +55,7 @@ def scan(source: Path, dataset: Path) -> None:
     for series_id, series in enumerate(result.series, start=1):
         if series.status is not Status.SUPPORTED:
             click.echo(
-                f"  series #{series_id} ({plural(len(series.instances), 'instance')}) "
+                f"  series #{series_id} ({plural(len(series.files), 'instance')}) "
                 f"{series.status.value}: {'; '.join(series.reasons)}"
             )
     for reason, n in sorted(Counter(s.reason for s in result.skipped).items()):

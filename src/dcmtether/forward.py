@@ -16,9 +16,9 @@ import pydicom
 from nibabel.openers import ImageOpener
 from nibabel.volumeutils import array_to_file
 
-from dcmtether import __version__, manifest, naming, orientation, tether
+from dcmtether import __version__, frames, manifest, naming, orientation, tether
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import Part, Series, Status, classify, read_instance
+from dcmtether.scan import Part, Series, Status, classify, read_instances
 
 DATATYPE_DIR = "anat"
 DWI_DIR = "dwi"
@@ -208,9 +208,12 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
 
 @dataclass
 class Volume:
-    datasets: list[pydicom.Dataset]  # part order: volume by volume, slices ascending
-    strings: list[tether.Strings]  # original strings, same order
-    indices: list[tuple[int, ...]]  # (slice,) or (slice, volume), same order
+    datasets: list[pydicom.Dataset]  # one per file, in order of their first image
+    strings: list[tether.Strings]  # original strings, per file
+    #: Per file: {"index": [...]} (classic) or {"frames": [[...], ...]} (multi-frame).
+    layouts: list[dict]
+    views: list[pydicom.Dataset]  # one per image (frame), part order
+    indices: list[tuple[int, ...]]  # (slice,) or (slice, volume), per image
     data: np.ndarray  # DICOM order (rows, columns, slices[, volumes]), raw stored values
     affine_lps: np.ndarray
 
@@ -219,10 +222,10 @@ def _revalidate(paths: list[Path]) -> Series:
     """The files must still form the series that was classified as convertible."""
     instances = []
     for path in paths:
-        result = read_instance(path)
-        if not hasattr(result, "series_instance_uid"):
+        result = read_instances(path)
+        if not isinstance(result, list):
             raise ConversionError(f"source file no longer readable: {result.reason}")
-        instances.append(result)
+        instances.extend(result)
     series = Series(instances[0].series_instance_uid, instances)
     classify(series)
     if series.status is Status.UNSUPPORTED or len({i.series_instance_uid for i in instances}) > 1:
@@ -245,7 +248,7 @@ def volume_affine(datasets: list[pydicom.Dataset]) -> np.ndarray:
 
 
 def first_volume(datasets: list, indices: list) -> list:
-    """The datasets of volume 0 (all of them for 3D), in slice order."""
+    """The images (datasets or frame views) of volume 0 (all of them for 3D), in slice order."""
     chosen = [
         (index[0], ds)
         for ds, index in zip(datasets, indices, strict=True)
@@ -256,18 +259,41 @@ def first_volume(datasets: list, indices: list) -> list:
 
 def assemble(part: Part) -> Volume:
     with quiet_pydicom():
-        datasets = [pydicom.dcmread(i.path) for i in part.instances]
+        paths = list(dict.fromkeys(i.path for i in part.instances))
+        datasets = [pydicom.dcmread(path) for path in paths]
         # Before anything touches the elements: conversion loses their original strings.
         strings = [tether.capture_strings(ds) for ds in datasets]
-        planes = [ds.pixel_array for ds in datasets]
+        by_path = dict(zip(paths, datasets, strict=True))
+        pixels = {path: ds.pixel_array for path, ds in by_path.items()}
+        all_views = {path: frames.frame_views(ds) for path, ds in by_path.items()}
+
+        planes, views = [], []
+        frame_indices: dict[Path, dict[int, list[int]]] = {path: {} for path in paths}
+        for inst, index in zip(part.instances, part.indices, strict=True):
+            array = pixels[inst.path]
+            frame = inst.frame or 0
+            planes.append(array[frame] if array.ndim == 3 else array)
+            views.append(all_views[inst.path][frame])
+            frame_indices[inst.path][frame] = list(index)
+        multi_frame = {i.path: i.frame is not None for i in part.instances}
+        layouts = []
+        for path in paths:
+            by_frame = frame_indices[path]
+            if not multi_frame[path]:
+                layouts.append({"index": by_frame[0]})
+                continue
+            if sorted(by_frame) != list(range(len(all_views[path]))):
+                raise ConversionError("not every frame of a multi-frame instance is used")
+            layouts.append({"frames": [by_frame[n] for n in sorted(by_frame)]})
+
         n_slices = 1 + max(index[0] for index in part.indices)
         shape = (*planes[0].shape, n_slices) + ((part.n_volumes,) if part.volume_key else ())
         # Native byte order: pixel_array of big-endian files is big-endian (e.g. ">i2").
         data = np.empty(shape, dtype=planes[0].dtype.newbyteorder("="))
         for plane, index in zip(planes, part.indices, strict=True):
             data[(slice(None), slice(None), *index)] = plane
-        affine = volume_affine(first_volume(datasets, part.indices))
-    return Volume(datasets, strings, list(part.indices), data, affine)
+        affine = volume_affine(first_volume(views, part.indices))
+    return Volume(datasets, strings, layouts, views, list(part.indices), data, affine)
 
 
 def nifti_scaling(datasets: list[pydicom.Dataset]) -> tuple[float, float] | None:
@@ -329,6 +355,7 @@ _SIDECAR_KEYWORDS = [  # (DICOM keyword, BIDS key, scale)
     ("SliceThickness", "SliceThickness", None),
     ("SpacingBetweenSlices", "SpacingBetweenSlices", None),
     ("EchoTime", "EchoTime", 1e-3),  # BIDS: seconds
+    ("EffectiveEchoTime", "EchoTime", 1e-3),  # Enhanced MR (MREchoSequence); used if no EchoTime
     ("RepetitionTime", "RepetitionTime", 1e-3),
     ("InversionTime", "InversionTime", 1e-3),
     ("FlipAngle", "FlipAngle", None),
@@ -373,8 +400,10 @@ def sidecar(
 ) -> dict:
     """Readable metadata (keyword: value). Not used for recovery; no patient identifiers.
 
-    Values come from the first instance of each volume; values that differ between volumes
-    go to ``DcmTether.PerVolume`` (one entry per volume) instead of the top level.
+    ``datasets`` are the images (classic datasets or enhanced frame views, see
+    :mod:`dcmtether.frames`). Values come from the first image of each volume; values that
+    differ between volumes go to ``DcmTether.PerVolume`` (one entry per volume) instead of the
+    top level.
     """
     firsts: dict[int, pydicom.Dataset] = {}
     for ds, index in zip(datasets, indices, strict=True):
@@ -386,7 +415,11 @@ def sidecar(
         for keyword in volume_key:
             per_volume[keyword] = [_sidecar_value(ds, keyword, None) for ds in volumes]
         for keyword, key, scale in _SIDECAR_KEYWORDS:
+            if key in out or key in per_volume:
+                continue  # an earlier keyword already filled it
             values = [_sidecar_value(ds, keyword, scale) for ds in volumes]
+            if all(v is None for v in values):
+                continue
             if all(v == values[0] for v in values):
                 if values[0] is not None:
                     out[key] = values[0]
@@ -433,19 +466,19 @@ def _convert_part(
     document = tether.build(
         volume.datasets,
         file_names,
-        [list(index) for index in volume.indices],
+        volume.layouts,
         volume.data.dtype,
         volume.data.shape,
         ornt,
         volume.strings,
     )
     info = sidecar(
-        volume.datasets, volume.indices, plan.suffix, part.volume_key, chunk, plan.acq_source
+        volume.views, volume.indices, plan.suffix, part.volume_key, chunk, plan.acq_source
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        write_nifti(nifti_path, data_ras, affine_ras, nifti_scaling(volume.datasets))
+        write_nifti(nifti_path, data_ras, affine_ras, nifti_scaling(volume.views))
         tether.write(document, tether_path)
         sidecar_path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     except BaseException:
