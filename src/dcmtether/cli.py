@@ -9,6 +9,8 @@ from dcmtether import __version__
 from dcmtether.compare import compare_series, dicom_files
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import ManifestError, manifest_path, write_manifest
+from dcmtether.pmap import PmapError, to_pmap
+from dcmtether.pmap import load_metadata as load_pmap_metadata
 from dcmtether.reverse import ReverseError, tether_path_for, to_dicom, transfer_syntax_change
 from dcmtether.scan import Status, plural
 from dcmtether.scan import scan as scan_directory
@@ -154,3 +156,25 @@ def to_seg_command(nifti: Path, labels: Path, metadata: Path, output: Path) -> N
     if renumbered:
         pairs = ", ".join(f"{k}->{v}" for k, v in sorted(renumbered.items()))
         click.echo(f"Label values renumbered to segment numbers: {pairs}.")
+
+
+@main.command("to-pmap")
+@click.argument("nifti", type=_existing_file)
+@click.argument("map_nifti", metavar="MAP", type=_existing_file)
+@click.argument("metadata", type=_existing_file)
+@click.argument("output", type=click.Path(dir_okay=False, path_type=Path))
+def to_pmap_command(nifti: Path, map_nifti: Path, metadata: Path, output: Path) -> None:
+    """Write a DICOM Parametric Map for MAP (e.g. ADC, QSM) on the grid of NIFTI.
+
+    NIFTI is a converted source (with its *.tether.json); MAP must have the same shape and
+    affine. METADATA is a dcmqi parametric map template (JSON: quantity, units, method).
+    Writes OUTPUT (a new file). Research use only.
+    """
+    try:
+        result = to_pmap(nifti, map_nifti, load_pmap_metadata(metadata), output)
+    except PmapError as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(
+        f"Wrote DICOM Parametric Map ({result.dtype}) on "
+        f"{plural(result.n_sources, 'source image')}."
+    )
