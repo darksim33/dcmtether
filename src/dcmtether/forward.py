@@ -445,6 +445,8 @@ class Outcome:
     series_id: int
     ok: bool
     message: str = ""
+    #: Number of NIfTI files written (chunks), if converted.
+    outputs: int = 0
 
 
 def _convert_part(
@@ -523,6 +525,7 @@ it as is. Research use only.
     sub-<subject>/ses-<session>/anat/<stem>.tether.json  everything needed to rebuild the DICOM
     sub-<subject>/ses-<session>/dwi/<stem>.*             the same for diffusion series
     manifest.sqlite                                      scan and conversion records
+    logs/dcmtether.jsonl                                 structured log (ids and counts only)
 
 4D series (multi-echo, diffusion, dynamics) are one 4D NIfTI; values that differ between
 volumes are listed in the sidecar under `DcmTether.PerVolume`.
@@ -602,7 +605,7 @@ def convert_dataset(dataset: Path) -> list[Outcome]:
                 )
                 continue
             manifest.record_converted(db, sid, plan.subject, plan.session, outputs)
-            outcomes.append(Outcome(sid, True))
+            outcomes.append(Outcome(sid, True, outputs=len(outputs)))
         return outcomes
     finally:
         db.close()
