@@ -1,19 +1,30 @@
 # DCMtether
 
 Lossless DICOM ⇄ NIfTI round trips for MRI series, as a basis for derivatives (segmentations,
-ADC/QSM maps) that are written back as properly referenced DICOM (SEG, Parametric Map).
+ADC/QSM maps) that are written back as properly referenced DICOM (SEG, Parametric Map, or
+derived MR images for any PACS).
 
-**Status:** early development (Phase 0 of `docs/dev/PLAN.md`). The CLI commands exist but are
-not implemented yet. **Research use only — not for clinical or diagnostic use.**
+**Research use only — not for clinical or diagnostic use.** A converted dataset **identifies
+patients** (file names are built from PatientName and StudyDate): never share it as is.
+
+```
+uv sync
+uv run dcmtether run /path/to/dicom /path/to/dataset     # scan + convert (rerunnable)
+uv run dcmtether to-dcm DATASET/sub-…/….nii.gz rebuilt/  # back to identical DICOM
+uv run dcmtether to-seg NIFTI labels.nii.gz seg-template.json seg.dcm
+```
+
+- [Usage](docs/usage.md): workflow and every command.
+- [Formats](docs/formats.md): dataset layout, file names, `*.tether.json`, sidecar, manifest, log.
+- [Supported inputs](docs/supported-inputs.md): what converts, what does not, and why.
+- Example metadata templates: [`docs/examples/`](docs/examples/).
 
 ## Development
 
 ```
-uv sync
-uv run dcmtether --help
 uv run ruff format --check . && uv run ruff check . && uv run pytest
 ```
 
-The first test run downloads public test data and the DICOM standard into `.cache/`.
-See `CLAUDE.md` for conventions and data-protection rules, and `docs/dev/test-data.md` for
-what the test data covers.
+The first test run downloads public test data and the DICOM standard into `.cache/`. Plan and
+decisions: `docs/dev/PLAN.md`; conventions and data-protection rules: `CLAUDE.md`; test data
+coverage: `docs/dev/test-data.md`.

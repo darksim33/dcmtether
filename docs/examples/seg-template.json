@@ -1,0 +1,54 @@
+{
+  "ContentCreatorName": "Reader^One",
+  "SeriesDescription": "Liver segmentation",
+  "SeriesNumber": "300",
+  "InstanceNumber": "1",
+  "segmentAttributes": [
+    [
+      {
+        "labelID": 1,
+        "SegmentLabel": "liver",
+        "SegmentDescription": "Liver",
+        "SegmentAlgorithmType": "AUTOMATIC",
+        "SegmentAlgorithmName": "nnU-Net",
+        "SegmentAlgorithmVersion": "2.5",
+        "SegmentedPropertyCategoryCodeSequence": {
+          "CodeValue": "123037004",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Anatomical Structure"
+        },
+        "SegmentedPropertyTypeCodeSequence": {
+          "CodeValue": "10200004",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Liver"
+        },
+        "recommendedDisplayRGBValue": [
+          221,
+          130,
+          101
+        ]
+      },
+      {
+        "labelID": 2,
+        "SegmentLabel": "tumor",
+        "SegmentDescription": "Liver tumor",
+        "SegmentAlgorithmType": "MANUAL",
+        "SegmentedPropertyCategoryCodeSequence": {
+          "CodeValue": "49755003",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Morphologically Abnormal Structure"
+        },
+        "SegmentedPropertyTypeCodeSequence": {
+          "CodeValue": "108369006",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Neoplasm"
+        },
+        "recommendedDisplayRGBValue": [
+          255,
+          0,
+          0
+        ]
+      }
+    ]
+  ]
+}

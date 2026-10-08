@@ -1,0 +1,20 @@
+{
+  "QuantityValueCode": {
+    "CodeValue": "113041",
+    "CodingSchemeDesignator": "DCM",
+    "CodeMeaning": "Apparent Diffusion Coefficient"
+  },
+  "MeasurementUnitsCode": {
+    "CodeValue": "mm2/s",
+    "CodingSchemeDesignator": "UCUM",
+    "CodeMeaning": "mm2/s"
+  },
+  "MeasurementMethodCode": {
+    "CodeValue": "113250",
+    "CodingSchemeDesignator": "DCM",
+    "CodeMeaning": "Mono-exponential ADC model"
+  },
+  "SeriesNumber": "701",
+  "InstanceNumber": "1",
+  "SeriesDescription": "ADC map"
+}
