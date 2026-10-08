@@ -2,6 +2,7 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
+import dcmqa
 import pytest
 import testdata
 from dicom_validator.spec_reader.edition_reader import EditionReader
@@ -65,6 +66,19 @@ def test_file() -> Callable[[str], Path]:
     def get(name: str) -> Path:
         try:
             return testdata.fetch(name)
+        except testdata.DownloadError as exc:
+            pytest.skip(str(exc))
+
+    return get
+
+
+@pytest.fixture(scope="session")
+def dcm_qa() -> Callable[..., Path]:
+    """Fetch a pinned dcm_qa ``In/`` folder (dcm2niix validation data); skip if offline."""
+
+    def get(repository: str, subdir: str = "") -> Path:
+        try:
+            return dcmqa.fetch(repository, subdir)
         except testdata.DownloadError as exc:
             pytest.skip(str(exc))
 

@@ -7,6 +7,7 @@ import numpy as np
 import pydicom
 import pytest
 from pydicom.dataelem import DataElement
+from pydicom.valuerep import DS
 from synthetic import (
     CORONAL,
     SAGITTAL,
@@ -16,6 +17,7 @@ from synthetic import (
     make_4d,
     make_localizer,
     make_series,
+    make_two_planes,
     rotated,
     write_series,
 )
@@ -92,12 +94,91 @@ def test_localizer_is_split_by_plane(tmp_path):
     assert series.reasons == ["3 distinct image planes (orientation, matrix or pixel spacing)"]
 
 
-def test_multi_volume_series_is_split(tmp_path):
-    series = _only(_scan(tmp_path, make_4d(n_volumes=3)))
+def test_two_stacks_in_one_series_are_split(tmp_path):
+    series = _only(_scan(tmp_path, make_two_planes()))
     assert series.status is Status.SPLIT
+    assert [p["n_positions"] for p in series.geometry["parts"]] == [4, 3]
+    assert [len(p.instances) for p in series.parts] == [4, 3]
+
+
+def test_split_parts_follow_instance_numbers(tmp_path):
+    series = _only(_scan(tmp_path, make_localizer()))
+    assert [p.instances[0].instance_number for p in series.parts] == [1, 2, 3]
+    assert [p.indices for p in series.parts] == [[(0,)]] * 3
+
+
+def test_split_series_with_an_irregular_part_is_unsupported(tmp_path):
+    s = make_two_planes()
+    s.datasets.pop(1)  # second axial slice: the axial part now has a gap
+    reasons = _unsupported(tmp_path, s)
+    assert reasons[0] == "2 distinct image planes (orientation, matrix or pixel spacing)"
+    assert reasons[1].startswith("plane 1: missing slices")
+
+
+# --- 4D ----------------------------------------------------------------------------------------
+
+VOLUME_KEYS = {
+    "echo": ["EchoNumbers"],
+    "dynamic": ["TemporalPositionIdentifier"],
+    "diffusion": ["DiffusionBValue", "DiffusionGradientOrientation"],
+}
+
+
+@pytest.mark.parametrize(("kind", "key"), VOLUME_KEYS.items(), ids=VOLUME_KEYS.keys())
+def test_multi_volume_series_is_supported(tmp_path, kind, key):
+    series = _only(_scan(tmp_path, make_4d(n_volumes=3, kind=kind)))
+    assert series.status is Status.SUPPORTED, series.reasons
     assert series.geometry["n_volumes"] == 3
     assert series.geometry["n_positions"] == 5
-    assert "3 volumes at the same 5 slice positions" in series.reasons[0]
+    assert series.geometry["volume_key"] == key
+    [part] = series.parts
+    assert part.volume_key == tuple(key)
+    # instances ordered volume by volume, slices ascending along the normal
+    assert part.indices == [(k, v) for v in range(3) for k in range(5)]
+    assert [i.instance_number for i in part.instances] == list(range(1, 16))
+
+
+def test_volumes_follow_acquisition_order_not_key_order(tmp_path):
+    s = make_4d(n_volumes=3, kind="echo")
+    for ds in s.datasets:  # echo numbers 3, 2, 1 in acquisition order
+        ds.EchoNumbers = 4 - ds.EchoNumbers
+    [part] = _only(_scan(tmp_path, s)).parts
+    assert [part.instances[n].echo_number for n in (0, 5, 10)] == [3, 2, 1]
+
+
+def test_volumes_of_a_shuffled_series(tmp_path):
+    [part] = _only(_scan(tmp_path, make_4d(SeriesSpec(shuffle=True, seed=4)))).parts
+    assert [i.instance_number for i in part.instances] == list(range(1, 16))
+
+
+def test_indistinguishable_volumes_are_unsupported(tmp_path):
+    assert _unsupported(tmp_path, make_4d(n_volumes=2, kind="none")) == [
+        "2 volumes at the same 5 slice positions, but no attribute tells them apart"
+    ]
+
+
+def test_volume_attribute_must_be_constant_within_a_volume(tmp_path):
+    s = make_4d(n_volumes=2, kind="none")
+    for ds in s.datasets:  # distinct per instance, so it does not group slices into volumes
+        ds.TriggerTime = DS(10 * ds.InstanceNumber)
+    assert _unsupported(tmp_path, s) == [
+        "2 volumes at the same 5 slice positions, but no attribute tells them apart"
+    ]
+
+
+def test_rescale_may_differ_between_volumes(tmp_path):
+    s = make_4d(n_volumes=3, volume_rescale=[(1.0, 0.0), (2.0, 0.0), (2.0, -5.0)])
+    series = _only(_scan(tmp_path, s))
+    assert series.status is Status.SUPPORTED, series.reasons
+
+
+def test_rescale_must_be_uniform_within_a_volume(tmp_path):
+    s = make_4d(n_volumes=2)
+    s.datasets[0].RescaleSlope = DS("2")
+    s.datasets[0].RescaleIntercept = DS("0")
+    assert _unsupported(tmp_path, s) == [
+        "rescale slope/intercept differ within a volume (2 distinct)"
+    ]
 
 
 # --- unsupported -------------------------------------------------------------------------------
@@ -128,7 +209,7 @@ def test_mixed_thickness(tmp_path):
 def test_per_slice_rescale(tmp_path):
     s = make_series(SeriesSpec(n_slices=2, rescale=[(1.0, 0.0), (2.0, 0.0)]))
     assert _unsupported(tmp_path, s) == [
-        "rescale slope/intercept differ between instances (2 distinct)"
+        "rescale slope/intercept differ within a volume (2 distinct)"
     ]
 
 

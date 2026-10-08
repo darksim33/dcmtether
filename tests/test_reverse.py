@@ -12,7 +12,16 @@ from pydicom.sequence import Sequence
 from pydicom.uid import ImplicitVRLittleEndian
 from pydicom.valuerep import DS
 from roundtrip import SPECS, forward, round_trip
-from synthetic import SeriesSpec, SyntheticSeries, make_series, write_series
+from synthetic import (
+    VOLUME_KINDS,
+    SeriesSpec,
+    SyntheticSeries,
+    make_4d,
+    make_localizer,
+    make_series,
+    make_two_planes,
+    write_series,
+)
 
 from dcmtether import tether
 from dcmtether.cli import main
@@ -42,6 +51,36 @@ def test_round_trip_is_identical(tmp_path, spec):
     report = round_trip(_write(make_series(spec), tmp_path), tmp_path)
     _assert_identical(report)
     assert report.n_compared == spec.n_slices
+
+
+# --- 4D and split series -----------------------------------------------------------------------
+
+KINDS = [k for k in VOLUME_KINDS if k != "none"]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize(
+    "spec",
+    [SeriesSpec(), SeriesSpec(orientation=SPECS["oblique"].orientation), SeriesSpec(shuffle=True)],
+    ids=["axial", "oblique", "shuffled"],
+)
+def test_round_trip_4d(tmp_path, kind, spec):
+    report = round_trip(_write(make_4d(spec, n_volumes=3, kind=kind), tmp_path), tmp_path)
+    _assert_identical(report)
+    assert report.n_compared == 15
+
+
+def test_round_trip_4d_with_per_volume_rescale(tmp_path):
+    series = make_4d(n_volumes=3, volume_rescale=[(1.0, 0.0), (2.0, 0.0), (2.0, -5.0)])
+    _assert_identical(round_trip(_write(series, tmp_path), tmp_path))
+
+
+@pytest.mark.parametrize("make", [make_localizer, make_two_planes], ids=["localizer", "two-planes"])
+def test_round_trip_split_series(tmp_path, make):
+    series = make()
+    report = round_trip(_write(series, tmp_path), tmp_path)
+    _assert_identical(report)
+    assert report.n_compared == len(series.datasets)
 
 
 def test_round_trip_with_uniform_rescale(tmp_path):
@@ -349,6 +388,15 @@ def test_affine_mismatch_is_an_error(tmp_path, converted):
     _replace_nifti(converted, np.asarray(img.dataobj.get_unscaled()), affine)
     with pytest.raises(ReverseError, match="affine"):
         to_dicom(converted, tmp_path / "out")
+
+
+def test_4d_volume_count_mismatch_is_an_error(tmp_path):
+    [row] = forward(_write(make_4d(n_volumes=3), tmp_path), tmp_path / "dataset")
+    nifti = tmp_path / "dataset" / row["nifti_path"]
+    img = nib.load(nifti)
+    _replace_nifti(nifti, np.asarray(img.dataobj.get_unscaled())[..., :2], img.affine)
+    with pytest.raises(ReverseError, match="shape"):
+        to_dicom(nifti, tmp_path / "out")
 
 
 def test_scaling_mismatch_is_an_error(tmp_path, converted):

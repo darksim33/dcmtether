@@ -98,6 +98,8 @@ class SyntheticSeries:
     #: Voxel index (row, column, slice) → LPS mm; ``None`` if slice spacing is uneven.
     affine_lps: np.ndarray | None
     series_instance_uid: str
+    #: Multi-plane series: one entry per image plane, in InstanceNumber order.
+    parts: list["SyntheticSeries"] = field(default_factory=list)
 
 
 def _per_slice(value, n: int, name: str, scalar: bool) -> list:
@@ -243,27 +245,65 @@ def make_localizer(seed: int = 0) -> SyntheticSeries:
         )
         datasets.append(ds)
     volume = np.concatenate([p.volume for p in parts], axis=-1)
-    return SyntheticSeries(base, datasets, volume, None, series_uid)
+    return SyntheticSeries(base, datasets, volume, None, series_uid, parts)
 
 
-def make_4d(spec: SeriesSpec | None = None, n_volumes: int = 3) -> SyntheticSeries:
-    """``n_volumes`` volumes at identical slice positions in one series (e.g. multi-echo).
+#: Volume kinds for :func:`make_4d`: which attributes tell the volumes apart.
+VOLUME_KINDS = ("echo", "dynamic", "diffusion", "none")
 
-    Volumes differ by EchoNumbers/EchoTime and by pixel values; ``volume`` is 4D
-    (rows, columns, slices, volumes).
+
+def _volume_attributes(ds: Dataset, kind: str, v: int) -> None:
+    if kind == "echo":
+        ds.EchoNumbers = v + 1
+        ds.EchoTime = DS(15 * (v + 1))
+    elif kind == "dynamic":
+        ds.TemporalPositionIdentifier = v + 1
+        ds.TriggerTime = DS(1000 * v)
+    elif kind == "diffusion":
+        ds.add_new(0x00189087, "FD", 0.0 if v == 0 else 1000.0)  # DiffusionBValue
+        if v:  # b0 has no gradient direction
+            gradients = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.6, 0.8, 0.0)]
+            ds.add_new(
+                0x00189089, "FD", list(gradients[(v - 1) % 4])
+            )  # DiffusionGradientOrientation
+    elif kind != "none":
+        raise ValueError(f"unknown volume kind: {kind}")
+
+
+def make_4d(
+    spec: SeriesSpec | None = None,
+    n_volumes: int = 3,
+    kind: str = "echo",
+    volume_rescale: Sequence[tuple[float, float]] | None = None,
+) -> SyntheticSeries:
+    """``n_volumes`` volumes at identical slice positions in one series.
+
+    ``kind`` sets the attributes that distinguish the volumes (see :data:`VOLUME_KINDS`);
+    ``"none"`` leaves them indistinguishable. ``volume_rescale`` gives one (slope, intercept)
+    per volume. Volumes differ by pixel values; ``volume`` is 4D (rows, columns, slices,
+    volumes), volumes in the order of ``kind``'s attribute.
     """
     spec = spec or SeriesSpec()
-    series_uid = synthetic_uid("4d", spec.seed, spec)
+    series_uid = synthetic_uid("4d", spec.seed, spec, kind)
     parts = [
-        make_series(replace(spec, series_number=spec.series_number + v)) for v in range(n_volumes)
+        make_series(
+            replace(
+                spec,
+                series_number=spec.series_number + v,
+                shuffle=False,
+                rescale=volume_rescale[v] if volume_rescale else spec.rescale,
+            )
+        )
+        for v in range(n_volumes)
     ]
     datasets = []
     for v, part in enumerate(parts):
         for k, ds in enumerate(part.datasets):
             ds.SeriesInstanceUID = series_uid
             ds.SeriesNumber = spec.series_number
-            ds.EchoNumbers = v + 1
-            ds.EchoTime = DS(15 * (v + 1))
+            _volume_attributes(ds, kind, v)
+            if kind == "dynamic":
+                ds.NumberOfTemporalPositions = n_volumes
             ds.InstanceNumber = v * len(part.datasets) + k + 1
             ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID = synthetic_uid(
                 "sop", series_uid, v, k
@@ -271,8 +311,27 @@ def make_4d(spec: SeriesSpec | None = None, n_volumes: int = 3) -> SyntheticSeri
             pixels = np.frombuffer(ds.PixelData, dtype=part.volume.dtype) + v * 100
             ds.PixelData = pixels.astype(part.volume.dtype).tobytes()
             datasets.append(ds)
+    if spec.shuffle:
+        random.Random(spec.seed).shuffle(datasets)
     volume = np.stack([p.volume + v * 100 for v, p in enumerate(parts)], axis=-1)
-    return SyntheticSeries(spec, datasets, volume.astype(parts[0].volume.dtype), None, series_uid)
+    affine = parts[0].affine_lps
+    return SyntheticSeries(spec, datasets, volume.astype(parts[0].volume.dtype), affine, series_uid)
+
+
+def make_two_planes(seed: int = 0) -> SyntheticSeries:
+    """An axial stack (4 slices) and a sagittal stack (3 slices) in one series."""
+    axial = make_series(SeriesSpec(n_slices=4, seed=seed))
+    sagittal = make_series(SeriesSpec(n_slices=3, orientation=SAGITTAL, rows=7, seed=seed))
+    series_uid = synthetic_uid("two-planes", seed)
+    datasets = []
+    for number, ds in enumerate([*axial.datasets, *sagittal.datasets], start=1):
+        ds.SeriesInstanceUID = series_uid
+        ds.InstanceNumber = number
+        ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID = synthetic_uid(
+            "sop", series_uid, number
+        )
+        datasets.append(ds)
+    return SyntheticSeries(axial.spec, datasets, axial.volume, None, series_uid, [axial, sagittal])
 
 
 def write_series(series: SyntheticSeries, directory: Path) -> list[Path]:
