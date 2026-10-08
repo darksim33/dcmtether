@@ -63,16 +63,16 @@ def _dicom_order_volume(nifti_path: Path, document: dict, datasets: list) -> np.
 
     if data.dtype.name != pixel["dtype"]:
         raise ReverseError("NIfTI data type does not match the tether.json")
-    expected_shape = [0] * len(shape_dicom)
+    expected_shape = list(shape_dicom)  # axes after the third (volumes) are not reoriented
     for axis, (target, _) in enumerate(ornt):
         expected_shape[int(target)] = shape_dicom[axis]
     if data.shape != tuple(expected_shape):
         raise ReverseError("NIfTI shape does not match the tether.json")
 
-    in_order = [ds for _, ds in sorted(zip(_slices(document), datasets, strict=True))]
     with quiet_pydicom():
-        affine_ras = orientation.LPS_TO_RAS @ forward.volume_affine(in_order)
-        expected_scaling = forward.rescale(in_order) or (1.0, 0.0)
+        stack = forward.first_volume(datasets, _indices(document, len(shape_dicom)))
+        affine_ras = orientation.LPS_TO_RAS @ forward.volume_affine(stack)
+        expected_scaling = forward.nifti_scaling(datasets) or (1.0, 0.0)
     expected = orientation.reoriented_affine(affine_ras, ornt, shape_dicom)
     if not np.allclose(img.affine, expected, rtol=0, atol=POSITION_TOL_MM):
         raise ReverseError("NIfTI affine does not match the geometry in the tether.json")
@@ -83,11 +83,12 @@ def _dicom_order_volume(nifti_path: Path, document: dict, datasets: list) -> np.
     return orientation.from_closest_ras(data, ornt)
 
 
-def _slices(document: dict) -> list[int]:
-    indices = [i["index"] for i in document["instances"]]
-    if any(len(index) != 1 for index in indices):
-        raise ReverseError("only 3D series (one index per instance) are supported")
-    return [index[0] for index in indices]
+def _indices(document: dict, ndim: int) -> list[tuple[int, ...]]:
+    """Instance indices into the DICOM-order volume: (slice,) for 3D, (slice, volume) for 4D."""
+    indices = [tuple(i["index"]) for i in document["instances"]]
+    if ndim not in (3, 4) or any(len(index) != ndim - 2 for index in indices):
+        raise ReverseError("instance indices do not match the volume shape in the tether.json")
+    return indices
 
 
 def _set_pixel_data(ds: pydicom.Dataset, plane: np.ndarray, vr: str, trailing: str | None) -> None:
@@ -111,8 +112,10 @@ def rebuild(nifti_path: Path) -> tuple[dict, list[pydicom.Dataset]]:
     datasets = tether.rebuild_datasets(document)
     volume = _dicom_order_volume(nifti_path, document, datasets)
     vr = document["pixel"]["pixel_data_vr"]
-    for k, ds, instance in zip(_slices(document), datasets, document["instances"], strict=True):
-        _set_pixel_data(ds, volume[:, :, k], vr, instance.get("pixel_data_trailing"))
+    indices = _indices(document, volume.ndim)
+    for index, ds, instance in zip(indices, datasets, document["instances"], strict=True):
+        plane = volume[(slice(None), slice(None), *index)]
+        _set_pixel_data(ds, plane, vr, instance.get("pixel_data_trailing"))
     return document, datasets
 
 

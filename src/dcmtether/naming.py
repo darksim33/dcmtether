@@ -141,9 +141,19 @@ def series_label(series_number: int | None) -> str:
     return f"{series_number:02d}"
 
 
-def file_stem(subject: str, session: str, series: str, suffix: str, acq: str | None = None) -> str:
+def file_stem(
+    subject: str,
+    session: str,
+    series: str,
+    suffix: str,
+    acq: str | None = None,
+    chunk: int | None = None,
+) -> str:
     parts = [f"sub-{subject}", f"ses-{session}"]
     if acq:
         parts.append(f"acq-{acq}")
-    parts += [f"ser-{series}", suffix]
+    parts.append(f"ser-{series}")
+    if chunk is not None:
+        parts.append(f"chunk-{chunk}")
+    parts.append(suffix)
     return "_".join(parts)
