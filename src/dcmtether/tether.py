@@ -189,13 +189,25 @@ def _split_with_strings(
 
 
 def _pixel_data_trailing(ds: pydicom.Dataset) -> str | None:
-    """Bytes stored after the last pixel (beyond the even-length pad), base64; else ``None``."""
+    """Bytes stored after the last pixel (beyond the even-length pad), base64; else ``None``.
+
+    Not applicable to compressed (encapsulated) pixel data, which is written back natively.
+    """
+    if ds.file_meta.TransferSyntaxUID.is_compressed:
+        return None
     n_bits = ds.Rows * ds.Columns * ds.SamplesPerPixel * ds.BitsAllocated
     expected = (n_bits * int(ds.get("NumberOfFrames") or 1) + 7) // 8
     extra = ds.PixelData[expected:]
     if not extra or (expected % 2 and extra == b"\0"):
         return None
     return base64.b64encode(extra).decode("ascii")
+
+
+def _native_pixel_data_vr(ds: pydicom.Dataset) -> str:
+    """VR of the PixelData to write: the source's, or OB/OW for compressed (encapsulated) data."""
+    if ds.file_meta.TransferSyntaxUID.is_compressed:
+        return "OW" if ds.BitsAllocated > 8 else "OB"
+    return ds["PixelData"].VR
 
 
 def _instance(index, name, file_meta, elements, strings, ds) -> dict:
@@ -248,7 +260,7 @@ def build(
         "pixel": {
             "dtype": np.dtype(dtype).name,
             "shape_dicom": [int(n) for n in shape_dicom],
-            "pixel_data_vr": first["PixelData"].VR,
+            "pixel_data_vr": _native_pixel_data_vr(first),
             "orientation": {
                 "from": DICOM_ORDER,
                 "to": "closest_RAS",

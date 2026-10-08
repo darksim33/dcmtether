@@ -6,7 +6,8 @@ Classification (PLAN.md §2):
   volumes one attribute tells apart (:data:`VOLUME_KEYS`).
 - ``split``: several image planes in one series (e.g. localizers), each of them a supported
   stack; converted as one NIfTI per plane (``chunk-<n>``).
-- ``unsupported``: cannot be converted without guessing or resampling.
+- ``unsupported``: cannot be converted without guessing or resampling (incl. lossy
+  compression: lossless compressed transfer syntaxes are supported).
 
 Reasons never contain element values that could identify a patient (no UIDs, names, dates,
 descriptions or paths) so they are safe to print and to include in failure reports.
@@ -23,11 +24,20 @@ import numpy as np
 import pydicom
 from pydicom.errors import InvalidDicomError
 from pydicom.uid import (
+    JPEG2000,
     UID,
     ExplicitVRBigEndian,
     ExplicitVRLittleEndian,
     ImplicitVRLittleEndian,
+    JPEG2000Lossless,
+    JPEGBaseline8Bit,
+    JPEGExtended12Bit,
+    JPEGLossless,
+    JPEGLosslessSV1,
+    JPEGLSLossless,
+    JPEGLSNearLossless,
     MRImageStorage,
+    RLELossless,
 )
 
 from dcmtether._quiet import quiet_pydicom
@@ -35,6 +45,15 @@ from dcmtether._quiet import quiet_pydicom
 SUPPORTED_SOP_CLASSES = frozenset({MRImageStorage})
 UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset(
     {ImplicitVRLittleEndian, ExplicitVRLittleEndian, ExplicitVRBigEndian}
+)
+#: Decoded for the NIfTI; to-dcm writes Explicit VR Little Endian instead (PLAN.md §2).
+LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES = frozenset(
+    {RLELossless, JPEGLossless, JPEGLosslessSV1, JPEGLSLossless, JPEG2000Lossless}
+)
+SUPPORTED_TRANSFER_SYNTAXES = UNCOMPRESSED_TRANSFER_SYNTAXES | LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES
+#: Never supported: decoders may differ, so the voxels are not reproducible.
+LOSSY_TRANSFER_SYNTAXES = frozenset(
+    {JPEGBaseline8Bit, JPEGExtended12Bit, JPEGLSNearLossless, JPEG2000}
 )
 
 #: Direction cosines closer than this are the same orientation.
@@ -351,9 +370,14 @@ def _check_content(instances: list[Instance], findings: _Findings) -> None:
         names = sorted(_uid_name(u) for u in sop_classes - SUPPORTED_SOP_CLASSES)
         findings.add(Status.UNSUPPORTED, f"SOP class not supported: {', '.join(names)}")
     syntaxes = {i.transfer_syntax_uid for i in instances}
-    if not syntaxes <= UNCOMPRESSED_TRANSFER_SYNTAXES:
-        names = sorted(_uid_name(u) for u in syntaxes - UNCOMPRESSED_TRANSFER_SYNTAXES)
-        findings.add(Status.UNSUPPORTED, f"transfer syntax not supported yet: {', '.join(names)}")
+    lossy = syntaxes & LOSSY_TRANSFER_SYNTAXES
+    if lossy:
+        names = sorted(_uid_name(u) for u in lossy)
+        findings.add(Status.UNSUPPORTED, f"lossy transfer syntax not supported: {', '.join(names)}")
+    other = syntaxes - SUPPORTED_TRANSFER_SYNTAXES - LOSSY_TRANSFER_SYNTAXES
+    if other:
+        names = sorted(_uid_name(u) for u in other)
+        findings.add(Status.UNSUPPORTED, f"transfer syntax not supported: {', '.join(names)}")
     if any(i.number_of_frames > 1 for i in instances):
         findings.add(Status.UNSUPPORTED, "multi-frame instances")
     if any("MOSAIC" in i.image_type for i in instances):

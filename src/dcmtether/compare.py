@@ -18,11 +18,14 @@ import pydicom
 from pydicom.dataelem import RawDataElement
 from pydicom.dataset import Dataset
 from pydicom.errors import InvalidDicomError
+from pydicom.uid import UID, ExplicitVRLittleEndian
 
 from dcmtether._quiet import quiet_pydicom
+from dcmtether.scan import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES
 from dcmtether.tether import element_name
 
 PIXEL_DATA = 0x7FE00010
+TRANSFER_SYNTAX = 0x00020010
 #: Derived from the other file meta elements; a difference there is reported on its own.
 FILE_META_GROUP_LENGTH = 0x00020000
 
@@ -97,6 +100,14 @@ def _compare_datasets(a: Dataset, b: Dataset, prefix: str, out: list[Finding]) -
             out.append((where, "value differs"))
 
 
+def _decompressed(a: Dataset, b: Dataset) -> bool:
+    """``b`` is ``a`` written uncompressed: a lossless source as Explicit VR Little Endian."""
+    return (
+        a.file_meta.get("TransferSyntaxUID") in LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES
+        and b.file_meta.get("TransferSyntaxUID") == ExplicitVRLittleEndian
+    )
+
+
 def _compare_pixels(a: Dataset, b: Dataset, diffs: list[Finding], notes: list[Finding]) -> None:
     if PIXEL_DATA not in a or PIXEL_DATA not in b:
         if PIXEL_DATA in a or PIXEL_DATA in b:
@@ -112,7 +123,7 @@ def _compare_pixels(a: Dataset, b: Dataset, diffs: list[Finding], notes: list[Fi
         return
     if pixels_a.shape != pixels_b.shape or not np.array_equal(pixels_a, pixels_b):
         diffs.append(("PixelData", "decoded pixels differ"))
-    elif raw_a.value != raw_b.value:
+    elif raw_a.value != raw_b.value and not _decompressed(a, b):
         notes.append(("PixelData", "raw bytes differ (decoded pixels equal)"))
 
 
@@ -120,7 +131,15 @@ def _compare(a: Dataset, b: Dataset) -> tuple[list[Finding], list[Finding]]:
     diffs: list[Finding] = []
     notes: list[Finding] = []
     with quiet_pydicom():
-        _compare_datasets(a.file_meta, b.file_meta, "", diffs)
+        meta_diffs: list[Finding] = []
+        _compare_datasets(a.file_meta, b.file_meta, "", meta_diffs)
+        if _decompressed(a, b):
+            # Expected for a lossless source; elements and decoded pixels are still compared.
+            meta_diffs.remove(("TransferSyntaxUID", "value differs"))
+            source = UID(a.file_meta.TransferSyntaxUID).name
+            change = f"changed from {source} to {ExplicitVRLittleEndian.name} (lossless)"
+            notes.append(("TransferSyntaxUID", change))
+        diffs.extend(meta_diffs)
         _compare_datasets(a, b, "", diffs)
         _compare_pixels(a, b, diffs, notes)
     return diffs, notes

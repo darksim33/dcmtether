@@ -9,11 +9,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import nibabel as nib
 import numpy as np
 import pydicom
-from pydicom.uid import ExplicitVRBigEndian
+from pydicom.uid import UID, ExplicitVRBigEndian, ExplicitVRLittleEndian
 
 from dcmtether import forward, orientation, tether
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import POSITION_TOL_MM
+from dcmtether.scan import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES, POSITION_TOL_MM
 
 PARTIAL_SUFFIX = ".partial"
 
@@ -103,6 +103,17 @@ def _set_pixel_data(ds: pydicom.Dataset, plane: np.ndarray, vr: str, trailing: s
     ds["PixelData"].VR = vr
 
 
+def transfer_syntax_change(document: dict) -> tuple[str, str] | None:
+    """(source, written) transfer syntax names if to-dcm does not write the source's syntax.
+
+    Lossless compressed sources are written as Explicit VR Little Endian (PLAN.md §2).
+    """
+    source = UID(document["source"]["transfer_syntax_uid"])
+    if source in LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES:
+        return source.name, ExplicitVRLittleEndian.name
+    return None
+
+
 def rebuild(nifti_path: Path) -> tuple[dict, list[pydicom.Dataset]]:
     """The tether document and the complete datasets (with pixel data), in instance order."""
     tether_path = tether_path_for(nifti_path)
@@ -114,6 +125,8 @@ def rebuild(nifti_path: Path) -> tuple[dict, list[pydicom.Dataset]]:
     vr = document["pixel"]["pixel_data_vr"]
     indices = _indices(document, volume.ndim)
     for index, ds, instance in zip(indices, datasets, document["instances"], strict=True):
+        if ds.file_meta.TransferSyntaxUID in LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES:
+            ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
         plane = volume[(slice(None), slice(None), *index)]
         _set_pixel_data(ds, plane, vr, instance.get("pixel_data_trailing"))
     return document, datasets
