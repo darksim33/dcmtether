@@ -40,7 +40,7 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | Manifest | **SQLite** (stdlib, supports in-place status updates for resumable runs; Parquet would add `pyarrow` for little gain). One table per dataset: one row per NIfTI with paths, subject, session, body part, modality, vendor, SOPClassUID, TransferSyntaxUID, SeriesInstanceUID, StudyInstanceUID, source directory, status. |
 | New UIDs | `2.25.<uuid-as-integer>` (no org root needed). Deterministic via `uuid.uuid5(namespace, source_uid + derivation + content_hash)` so identical reruns reproduce UIDs, but **different content always gets a different UID** (reusing a UID for changed data violates DICOM uniqueness and PACS may silently keep only one copy). Note: pydicom's `generate_uid()` uses pydicom's root by default — don't use it as-is. |
 | Subject/session labels | **Decided 2026-10-07 (replaces the earlier pseudonymous mapping-file plan):** `sub-` = first 5 letters of family + first 5 of given name (umlauts transliterated, ASCII letters only, CamelCase); `ses-` = StudyDate, plus `THHMM` from StudyTime only when one subject has several studies that day. **The dataset itself therefore identifies patients and must not be shared as is.** Clashes are never silent: different PatientIDs with the same subject label, same-day studies with equal times, or two series mapping to one file name → those series fail with an error naming manifest ids only. Missing PatientName or StudyDate → the series fails (anonymized data cannot be converted under this scheme). |
-| Validation | `dicom-validator` (pure Python, `validate_iods`) in pytest. `dciodvfy` (dicom3tools, C++) as an extra check later via subprocess/Docker. |
+| Validation | `dicom-validator` (pure Python, `validate_iods`) in pytest. `dciodvfy` (dicom3tools, C++) as an extra check later via subprocess (a Docker image is a future feature, §5). |
 | Derivatives | `highdicom`: `seg.Segmentation` for label maps, `pm.ParametricMap` for ADC/QSM. Fallback: derived MR images (`ImageType = DERIVED\SECONDARY`) for PACS that can't display SEG/PM. Source datasets are rebuilt in memory from `tether.json` — no original files needed. |
 | Research labeling | SeriesDescription suffix "RESEARCH USE ONLY", ContentLabel/ContentDescription (SEG/PM), ImageComments, Manufacturer/SoftwareVersions = this tool + version. No burned-in watermark by default (if ever added: set `BurnedInAnnotation = YES`). |
 | dcm2niix | Not used for the recovery path. Used as a **test oracle** and optionally to produce the human sidecar. dcm2niix does not reorient to RAS, so oracle comparisons are done **in world space** (via the affines / index permutation), never on raw arrays. |
@@ -208,9 +208,12 @@ Outcome and decisions:
 
 ### Phase 6 — Packaging & pipeline
 - Batch mode, resumable runs via the manifest, structured logging (no PHI in logs by default).
-- Docker image (incl. dcm2niix and dciodvfy for checks).
 - README for users; document custom BIDS entities.
 - Optional: BIDS exporter for subsets that need strict compliance.
+
+### Future features (not scheduled)
+- **Docker image** (incl. dcm2niix and dciodvfy for checks). Moved out of Phase 6 on 2026-10-08;
+  the tool installs with `uv`, so it isn't needed for the planned phases.
 
 ---
 
