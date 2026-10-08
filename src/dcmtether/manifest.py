@@ -205,7 +205,10 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
         _upgrade(db)
         for series_id, series in enumerate(result.series, start=1):
             first = series.first
-            source_dir = Path(os.path.commonpath([i.path.parent for i in series.instances]))
+            source_dir = Path(os.path.commonpath([path.parent for path in series.files]))
+            files = {}  # one row per file (multi-frame files hold several images)
+            for inst in series.instances:
+                files.setdefault(inst.path, inst)
             db.execute(
                 """INSERT INTO series (
                     id, series_instance_uid, study_instance_uid, status, reasons, modality,
@@ -231,7 +234,7 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
                     first.body_part_examined,
                     first.series_number,
                     first.series_description,
-                    len(series.instances),
+                    len(files),
                     _relative(source_dir, result.root),
                     json.dumps(series.geometry),
                 ),
@@ -246,7 +249,7 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
                         i.sop_instance_uid,
                         i.instance_number,
                     )
-                    for i in series.instances
+                    for i in files.values()
                 ],
             )
         db.executemany(
