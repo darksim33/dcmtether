@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phases 0–4 and 5a (DICOM SEG) done; next: Phase 5b (Parametric Map). This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–4, 5a (DICOM SEG) and 5b (Parametric Map) done; next: Phase 5c (derived-MR fallback). This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -48,6 +48,7 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | Validation | `dicom-validator` (pure Python, `validate_iods`) in pytest. `dciodvfy` (dicom3tools, C++) as an extra check later via subprocess (a Docker image is a future feature, §5). |
 | Derivatives | `highdicom`: `seg.Segmentation` for label maps, `pm.ParametricMap` for ADC/QSM. Fallback: derived MR images (`ImageType = DERIVED\SECONDARY`) for PACS that can't display SEG/PM. Source datasets are rebuilt in memory from `tether.json` — no original files needed. |
 | SEG (5a) | (decided 2026-10-08) Segment metadata = **dcmqi JSON template** (one label map: `segmentAttributes[0]`); `dcmtether to-seg NIFTI LABELS METADATA OUTPUT`. Label map must lie on the **source NIfTI grid** (same shape/affine; other grids rejected for now); integer values, every value declared; labelIDs renumbered to segment numbers 1..n (reported). **BINARY** segmentation (Segmentation Storage), not the newer LABELMAP SOP class: target viewers are **3D Slicer and clinical PACS** (decided 2026-10-08), whose LABELMAP support is new/uneven. Algorithm version defaults to `unknown`, family to CID 7162 "Artificial Intelligence" (optional template extensions `SegmentAlgorithmVersion`, `SegmentAlgorithmFamilyCodeSequence`). 3D sources only (4D and multi-file enhanced sources rejected). |
+| Parametric Map (5b) | (decided 2026-10-08) `dcmtether to-pmap NIFTI MAP METADATA OUTPUT`; metadata = **dcmqi parametric map template** (QuantityValueCode, MeasurementUnitsCode required; MeasurementMethodCode optional → second QuantityDefinition item "Measurement Method"; other template keys ignored). Same grid rule as SEG. **Lossless values:** float32/float64 → Float/DoubleFloatPixelData (slope 1); uint8/uint16 → stored as is with the NIfTI scaling as RWVM slope/intercept; signed or wider integers → shifted into uint16 with the intercept adjusted (range > 65535 → rejected, never rounded). NaN/Inf rejected. ContentQualification `RESEARCH`. Shared derivative code lives in `derived.py` (source rebuild, grid check, highdicom geometry normalisation, UIDs, labeling, writing). |
 | Research labeling | SeriesDescription suffix "RESEARCH USE ONLY", ContentLabel/ContentDescription (SEG/PM), ImageComments, Manufacturer/SoftwareVersions = this tool + version. No burned-in watermark by default (if ever added: set `BurnedInAnnotation = YES`). |
 | dcm2niix | Not used for the recovery path. Used as a **test oracle** and optionally to produce the human sidecar. dcm2niix does not reorient to RAS, so oracle comparisons are done **in world space** (via the affines / index permutation), never on raw arrays. |
 | Synthetic test data | PHI-free series generated with pydicom from a template: all axis permutations/flips, oblique angles, gaps, mixed thickness, localizers, per-slice rescale. Primary fixture source for Phases 1–3; complements `dicom-test-files`. |
@@ -271,6 +272,13 @@ Outcome and decisions:
 - UIDs: `uids.derived_uid` = `2.25.<uuid5(namespace, source series UID | derivation | content hash | role)>`; the content hash covers the SEG pixel array and the canonical metadata JSON. Identical reruns give identical UIDs; any change gives new ones.
 - Research labeling: SeriesDescription suffix `RESEARCH USE ONLY`, ContentDescription "RESEARCH USE ONLY - not for clinical use", Manufacturer/model `dcmtether`, SoftwareVersions = tool version. Existing outputs are never overwritten.
 
+
+**Status 5b: ✅ done (2026-10-08, branch `phase-5b-pmap`, stacked on `phase-5a-seg`).** Format + lint clean, 548 tests pass, none skipped. Code: `src/dcmtether/{pmap,derived}.py`, `dcmtether to-pmap`.
+Outcome and decisions:
+- Values checked in world space per frame through each frame's source reference (highdicom re-sorts frames by position, references stay correct): 5 orientation variants, float32/float64, uint8/uint16/int16/int32 with and without NIfTI scaling, enhanced source (frame references), and the real GE ADC series (its own voxels as the map).
+- No reference Parametric Map in the pinned test data: the validator test allows only the functional-group false positives seen on every SEG (5a) and nothing else.
+- NIfTI keeps `scl_slope`/`scl_inter` as float32; the Parametric Map reproduces the values as stored in the file.
+- Not supported yet: maps of 4D sources, several maps (e.g. ADC + quality map) in one object, `.bval`/`.bvec`-based provenance (SourceImageDiffusionBValues is ignored).
 
 ### Phase 6 — Packaging & pipeline
 - Batch mode, resumable runs via the manifest, structured logging (no PHI in logs by default).
