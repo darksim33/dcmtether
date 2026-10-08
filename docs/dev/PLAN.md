@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phases 0–3 and 4a done; next: Phase 4b (compressed transfer syntaxes). This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–3, 4a and 4b done; next: Phase 4c (enhanced multi-frame MR). This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -39,7 +39,7 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | Naming | BIDS-inspired key-value filenames with custom entities, always including the series number: `sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz`, folder `sub-…/ses-…/anat/`. **No body-part entity** (decided 2026-10-07; BodyPartExamined stays in manifest and sidecar). `acq-` = **ProtocolName**, else SeriesDescription (changed 2026-10-08: ProtocolName is filled more consistently, e.g. Philips without description, and carries no reconstruction suffixes; it is Type 3, so the fallback stays), reduced to letters/digits, camelCase, ≤24 chars; source recorded in the sidecar (`DcmTether.AcqSource`). Already converted series keep their old names (re-runs skip them). Suffix `T1w`/`T2w`/`PDw`/`FLAIR` from keywords in the same text (T2* excluded), else TR/TE/TI rules, else `MR`; rule recorded in the sidecar. Diffusion series: suffix `dwi`, folder `dwi/`. Multi-plane series: `chunk-<n>` entity after `ser-` (decided 2026-10-08). |
 | 4D series | **One 4D NIfTI per series** (decided 2026-10-08), instances indexed `[slice, volume]`. Volumes are told apart by the first attribute in `scan.VOLUME_KEYS` (EchoNumbers, TemporalPositionIdentifier, DiffusionBValue + GradientOrientation, AcquisitionNumber, EchoTime, InversionTime, TriggerTime) whose values are distinct at every slice position, with the same set at every position; otherwise `unsupported` (never guessed). Volumes are ordered by acquisition (lowest InstanceNumber), then by key value. |
 | Split series | Several image planes in one series (localizers) → one NIfTI per plane (`chunk-<n>`, InstanceNumber order) if **every** plane is a supported stack; otherwise the whole series is `unsupported`. |
-| Compressed TS | (Phase 4b, decided 2026-10-08) Lossless syntaxes only (RLE, JPEG lossless, JPEG-LS lossless, J2K lossless); `to-dcm` writes Explicit VR LE and records the change. Lossy stays `unsupported` (decoders may differ). |
+| Compressed TS | (Phase 4b, decided 2026-10-08) Lossless syntaxes only: RLE Lossless, JPEG Lossless (Process 14, incl. SV1), JPEG-LS Lossless, JPEG 2000 Lossless (`scan.LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES`), decoded with `pylibjpeg` (+ libjpeg/openjpeg/rle plugins, runtime dependencies). `to-dcm` writes **Explicit VR Little Endian** with native PixelData (OW, OB for 8-bit); tether.json keeps the source TS. `compare` reports exactly this change as a note ("changed from … (lossless)"), not a difference; all elements and decoded pixels must still match; any other TS change is a difference. Lossy (JPEG baseline/extended, JPEG-LS near-lossless, JPEG 2000) stays `unsupported` with its own reason (decoders may differ). |
 | Collisions | Never silent. Existing target → error (or explicit suffix + log). Manifest enforces uniqueness on SeriesInstanceUID. |
 | Manifest | **SQLite** (stdlib, supports in-place status updates for resumable runs; Parquet would add `pyarrow` for little gain). One table per dataset: one row per NIfTI with paths, subject, session, body part, modality, vendor, SOPClassUID, TransferSyntaxUID, SeriesInstanceUID, StudyInstanceUID, source directory, status. |
 | New UIDs | `2.25.<uuid-as-integer>` (no org root needed). Deterministic via `uuid.uuid5(namespace, source_uid + derivation + content_hash)` so identical reruns reproduce UIDs, but **different content always gets a different UID** (reusing a UID for changed data violates DICOM uniqueness and PACS may silently keep only one copy). Note: pydicom's `generate_uid()` uses pydicom's root by default — don't use it as-is. |
@@ -229,6 +229,15 @@ Outcome and decisions:
 - Sidecar for 4D: values that differ between volumes (TE, rescale, …) and the volume-key attributes go to `DcmTether.PerVolume` (one entry per volume), plus `VolumeKey`; split chunks record `Chunk`. DiffusionGradientOrientation is listed as in DICOM (patient LPS), `null` for b0.
 - Oracle: dcm2niix agrees on oblique dynamic and diffusion series (4D) and on multi-echo per echo (it writes one file per echo). Round trips through `compare` are identical for all 4D kinds (axial/oblique/shuffled), per-volume rescale, localizers and two-plane series.
 - Volume order follows acquisition (lowest InstanceNumber), not key value, so DWI volumes keep the scanner's gradient order.
+
+**Status 4b: ✅ done (2026-10-08, branch `phase-4b-compressed`, stacked on `phase-4a-4d`).** Format + lint clean, 455 tests pass, none skipped.
+Outcome and decisions:
+- Round trips through `compare` are identical (only the transfer-syntax note) for synthetic series in RLE, JPEG-LS and JPEG 2000 (axial, oblique, signed, shuffled, 4D) and for all 16 WG04 lossless MR files (MR1–4 × RLE/JPLL/JLSL/J2KR) plus the pydicom `MR_small` RLE/J2K/JPEG-LS variants and `MR2_J2KR`.
+- Oracle: each WG04 lossless file gives exactly the same NIfTI (voxels and affine) as its uncompressed `REF/MR*_UNC` original.
+- Decompressed files give the same dicom-validator errors as their compressed originals.
+- `pixel_data_trailing` does not apply to encapsulated data; `pixel_data_vr` is now the VR of the native PixelData to write.
+- `to-dcm` prints the transfer syntax change; `compare` prints each kind of note once with an instance count.
+- Not supported (no test data): Deflated Explicit VR LE, HTJ2K. pydicom's `compress()`/`decompress()` create new SOPInstanceUIDs by default; tests pass `generate_instance_uid=False` (the product never uses them).
 
 ### Phase 5 — Derivatives
 - Label-map metadata JSON (segment number → label, SNOMED CT category/type codes, color, algorithm info).
