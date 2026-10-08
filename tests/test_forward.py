@@ -9,16 +9,13 @@ import numpy as np
 import pydicom
 import pytest
 from click.testing import CliRunner
+from roundtrip import SPECS
 from synthetic import (
-    AXIAL,
-    CORONAL,
     SAGITTAL,
     SeriesSpec,
     SyntheticSeries,
-    flipped,
     make_localizer,
     make_series,
-    rotated,
     write_series,
 )
 
@@ -32,20 +29,6 @@ from dcmtether.scan import scan
 # "SYNTHETIC", TR 500 / TE 15 → T1w by parameters.
 DEFAULT_STEM = "sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_T1w"
 DEFAULT_DIR = Path("sub-SynthPhant/ses-20260101/anat")
-
-SPECS = {
-    "axial": SeriesSpec(),
-    "coronal": SeriesSpec(orientation=CORONAL),
-    "sagittal": SeriesSpec(orientation=SAGITTAL),
-    "flip-rows": SeriesSpec(orientation=flipped(AXIAL, rows=True)),
-    "flip-both-sagittal": SeriesSpec(orientation=flipped(SAGITTAL, rows=True, cols=True)),
-    "oblique": SeriesSpec(orientation=rotated(CORONAL, (1.0, 1.0, 0.0), 17.0)),
-    "oblique-40": SeriesSpec(orientation=rotated(SAGITTAL, (0.0, 0.3, 1.0), 40.0)),
-    "descending": SeriesSpec(descending=True),
-    "shuffled": SeriesSpec(shuffle=True, seed=3),
-    "signed": SeriesSpec(signed=True),
-    "single-slice": SeriesSpec(n_slices=1),
-}
 
 
 def _dataset(tmp_path: Path, *series: SyntheticSeries, names=None) -> Path:
@@ -118,7 +101,7 @@ def test_tether_document(tmp_path):
     convert_dataset(dataset)
     doc = json.loads((dataset / DEFAULT_DIR / f"{DEFAULT_STEM}.tether.json").read_text("utf-8"))
 
-    assert doc["format_version"] == 1
+    assert doc["format_version"] == 2
     assert doc["source"]["series_instance_uid"] == series.series_instance_uid
     assert doc["source"]["n_instances"] == 5
     assert doc["pixel"]["dtype"] == "uint16"
