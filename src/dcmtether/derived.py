@@ -68,6 +68,8 @@ class Source:
     #: Per derived frame (in ``images`` / frame order): the slice index it shows.
     slices: list[int]
     nifti: nib.Nifti1Image
+    #: The rebuilt source images as they are (same order as ``images``, own geometry).
+    originals: list[pydicom.Dataset]
 
     @property
     def series_instance_uid(self) -> str:
@@ -134,10 +136,10 @@ def load_source(source_nifti: Path) -> Source:
         document, datasets = reverse.rebuild(source_nifti)
     except reverse.ReverseError as exc:
         raise DerivedError(f"source: {exc}") from None
-    images, slices = _ordered(document, datasets)
+    originals, slices = _ordered(document, datasets)
     with quiet_pydicom():
-        images = _shared_geometry(images)
-    return Source(document, images, slices, nib.load(source_nifti))
+        images = _shared_geometry(originals)
+    return Source(document, images, slices, nib.load(source_nifti), originals)
 
 
 def load_on_grid(path: Path, source: Source, what: str) -> nib.Nifti1Image:
