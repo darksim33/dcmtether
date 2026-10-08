@@ -1,5 +1,6 @@
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import nibabel as nib
@@ -9,13 +10,21 @@ import pytest
 from click.testing import CliRunner
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
-from pydicom.uid import ImplicitVRLittleEndian
+from pydicom.uid import (
+    UID,
+    ExplicitVRLittleEndian,
+    ImplicitVRLittleEndian,
+    JPEG2000Lossless,
+    JPEGLSLossless,
+    RLELossless,
+)
 from pydicom.valuerep import DS
 from roundtrip import SPECS, forward, round_trip
 from synthetic import (
     VOLUME_KINDS,
     SeriesSpec,
     SyntheticSeries,
+    compressed,
     make_4d,
     make_localizer,
     make_series,
@@ -81,6 +90,73 @@ def test_round_trip_split_series(tmp_path, make):
     report = round_trip(_write(series, tmp_path), tmp_path)
     _assert_identical(report)
     assert report.n_compared == len(series.datasets)
+
+
+# --- compressed sources (written back as Explicit VR Little Endian) -----------------------------
+
+CODECS = {"rle": RLELossless, "jls": JPEGLSLossless, "j2k": JPEG2000Lossless}
+TS_NOTE = "changed from {} to Explicit VR Little Endian (lossless)"
+
+
+def _assert_identical_but_decompressed(report, transfer_syntax) -> None:
+    assert report.identical, report.lines()
+    assert {f"{n.where}: {n.kind}" for n in report.notes} == {
+        "TransferSyntaxUID: " + TS_NOTE.format(UID(transfer_syntax).name)
+    }
+
+
+@pytest.mark.parametrize("codec", CODECS.values(), ids=CODECS.keys())
+@pytest.mark.parametrize("spec", ["axial", "oblique", "signed", "shuffled"])
+def test_round_trip_compressed(tmp_path, codec, spec):
+    matrix = {"rows": 32, "columns": 40, "n_slices": 3} if codec == JPEG2000Lossless else {}
+    series = compressed(make_series(replace(SPECS[spec], **matrix)), codec)
+    report = round_trip(_write(series, tmp_path), tmp_path)
+    _assert_identical_but_decompressed(report, codec)
+    for path in dicom_files(tmp_path / "rebuilt"):
+        meta = pydicom.dcmread(path, stop_before_pixels=True).file_meta
+        assert meta.TransferSyntaxUID == ExplicitVRLittleEndian
+
+
+def test_round_trip_compressed_4d(tmp_path):
+    series = compressed(make_4d(n_volumes=2, kind="echo"), RLELossless)
+    _assert_identical_but_decompressed(round_trip(_write(series, tmp_path), tmp_path), RLELossless)
+
+
+COMPRESSED_REAL_FILES = [
+    *(
+        f"WG04/{codec}/MR{n}_{codec}"
+        for codec in ("RLE", "JPLL", "JLSL", "J2KR")
+        for n in range(1, 5)
+    ),
+    "pydicom/MR_small_RLE.dcm",
+    "pydicom/MR_small_jp2klossless.dcm",
+    "pydicom/MR_small_jpeg_ls_lossless.dcm",
+    "pydicom/MR2_J2KR.dcm",
+]
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("name", COMPRESSED_REAL_FILES)
+def test_round_trip_compressed_real_file(tmp_path, test_file, name):
+    source = tmp_path / "src" / "series"
+    source.mkdir(parents=True)
+    shutil.copy(test_file(name), source / "file.dcm")
+    transfer_syntax = pydicom.dcmread(source / "file.dcm", stop_before_pixels=True).file_meta
+    report = round_trip(tmp_path / "src", tmp_path)
+    _assert_identical_but_decompressed(report, transfer_syntax.TransferSyntaxUID)
+
+
+def test_cli_to_dcm_reports_the_transfer_syntax_change(tmp_path):
+    series = compressed(make_series(SeriesSpec(n_slices=2)), RLELossless)
+    [row] = forward(_write(series, tmp_path), tmp_path / "dataset")
+    result = CliRunner().invoke(
+        main, ["to-dcm", str(tmp_path / "dataset" / row["nifti_path"]), str(tmp_path / "out")]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output == (
+        "Wrote 2 DICOM files.\n"
+        "Transfer syntax changed from RLE Lossless to Explicit VR Little Endian (lossless).\n"
+    )
 
 
 def test_round_trip_with_uniform_rescale(tmp_path):
@@ -292,6 +368,16 @@ def test_rebuilt_ge_files_validate_like_originals(tmp_path, test_file, iod_error
     pairs = _rebuilt_pairs(_ge_adc_source(tmp_path, test_file), tmp_path)
     for original, rebuilt in pairs[:3]:
         assert iod_errors(rebuilt) == iod_errors(original)
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("name", ["WG04/JPLL/MR1_JPLL", "WG04/J2KR/MR3_J2KR"])
+def test_decompressed_files_validate_like_originals(tmp_path, test_file, iod_errors, name):
+    source = tmp_path / "src" / "series"
+    source.mkdir(parents=True)
+    shutil.copy(test_file(name), source / "file.dcm")
+    [(original, rebuilt)] = _rebuilt_pairs(tmp_path / "src", tmp_path)
+    assert iod_errors(rebuilt) == iod_errors(original)
 
 
 # --- safety ------------------------------------------------------------------------------------

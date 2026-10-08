@@ -334,6 +334,17 @@ def make_two_planes(seed: int = 0) -> SyntheticSeries:
     return SyntheticSeries(axial.spec, datasets, axial.volume, None, series_uid, [axial, sagittal])
 
 
+def compressed(series: SyntheticSeries, transfer_syntax: str) -> SyntheticSeries:
+    """Encode every instance's pixel data with ``transfer_syntax`` (in place; returns it).
+
+    Uses pydicom's encoders: RLE natively, JPEG-LS / JPEG 2000 via the pylibjpeg plugins.
+    JPEG 2000 needs at least 32 x 32 pixels (openjpeg's default resolution levels).
+    """
+    for ds in series.datasets:
+        ds.compress(transfer_syntax, generate_instance_uid=False)  # keep the SOPInstanceUID
+    return series
+
+
 def write_series(series: SyntheticSeries, directory: Path) -> list[Path]:
     """Write datasets as ``IM_0001``… in list order; return the paths."""
     directory.mkdir(parents=True, exist_ok=True)

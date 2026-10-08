@@ -7,12 +7,14 @@ import numpy as np
 import pydicom
 import pytest
 from pydicom.dataelem import DataElement
+from pydicom.uid import JPEG2000Lossless, JPEGLSLossless, RLELossless
 from pydicom.valuerep import DS
 from synthetic import (
     CORONAL,
     SAGITTAL,
     SeriesSpec,
     SyntheticSeries,
+    compressed,
     flipped,
     make_4d,
     make_localizer,
@@ -113,6 +115,18 @@ def test_split_series_with_an_irregular_part_is_unsupported(tmp_path):
     reasons = _unsupported(tmp_path, s)
     assert reasons[0] == "2 distinct image planes (orientation, matrix or pixel spacing)"
     assert reasons[1].startswith("plane 1: missing slices")
+
+
+# --- compressed --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "transfer_syntax", [RLELossless, JPEGLSLossless, JPEG2000Lossless], ids=["rle", "jls", "j2k"]
+)
+def test_lossless_compressed_series_is_supported(tmp_path, transfer_syntax):
+    spec = SeriesSpec(rows=32, columns=40, n_slices=3)  # JPEG 2000 needs >= 32 px
+    series = _only(_scan(tmp_path, compressed(make_series(spec), transfer_syntax)))
+    assert series.status is Status.SUPPORTED, series.reasons
 
 
 # --- 4D ----------------------------------------------------------------------------------------
@@ -384,9 +398,16 @@ def test_real_ge_adc_series_is_supported(tmp_path, test_file):
         ("pydicom/MR_small_bigendian.dcm", Status.SUPPORTED, None),
         ("pydicom/emri_small.dcm", Status.UNSUPPORTED,
          "SOP class not supported: Enhanced MR Image Storage"),
-        ("WG04/J2KR/MR1_J2KR", Status.UNSUPPORTED,
-         "transfer syntax not supported yet: JPEG 2000 Image Compression (Lossless Only)"),
-        ("WG04/RLE/MR2_RLE", Status.UNSUPPORTED, "transfer syntax not supported yet: RLE Lossless"),
+        ("WG04/J2KR/MR1_J2KR", Status.SUPPORTED, None),
+        ("WG04/RLE/MR2_RLE", Status.SUPPORTED, None),
+        ("WG04/JPLL/MR3_JPLL", Status.SUPPORTED, None),
+        ("WG04/JLSL/MR4_JLSL", Status.SUPPORTED, None),
+        ("WG04/J2KI/MR1_J2KI", Status.UNSUPPORTED,
+         "lossy transfer syntax not supported: JPEG 2000 Image Compression"),
+        ("WG04/JPLY/MR2_JPLY", Status.UNSUPPORTED,
+         "lossy transfer syntax not supported: JPEG Extended (Process 2 and 4)"),
+        ("WG04/JLSN/MR3_JLSN", Status.UNSUPPORTED,
+         "lossy transfer syntax not supported: JPEG-LS Lossy (Near-Lossless) Image Compression"),
     ],
 )  # fmt: skip
 def test_real_single_files(tmp_path, test_file, name, status, reason):

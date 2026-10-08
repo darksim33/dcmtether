@@ -556,3 +556,27 @@ def test_multi_echo_matches_dcm2niix_per_echo(tmp_path):
         theirs, their_affine = _canonical_raw(out / f"oracle_e{v + 1}.nii")
         np.testing.assert_allclose(our_affine, their_affine, atol=1e-3)
         np.testing.assert_array_equal(ours[..., v], theirs)
+
+
+# --- compressed sources ------------------------------------------------------------------------
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("codec", ["RLE", "JPLL", "JLSL", "J2KR"])
+@pytest.mark.parametrize("n", [1, 2, 3, 4])
+def test_lossless_compressed_gives_the_same_nifti_as_uncompressed(tmp_path, test_file, codec, n):
+    """WG04 ships each image uncompressed (REF) and in every codec: the NIfTIs must agree."""
+    images = {}
+    for variant in (f"REF/MR{n}_UNC", f"{codec}/MR{n}_{codec}"):
+        source = tmp_path / variant.replace("/", "_") / "src" / "s"
+        source.mkdir(parents=True)
+        shutil.copy(test_file(f"WG04/{variant}"), source / "file.dcm")
+        dataset = source.parent.parent / "dataset"
+        write_manifest(dataset, scan(source.parent))
+        assert all(o.ok for o in convert_dataset(dataset))
+        [row] = output_rows(dataset)
+        img = nib.load(dataset / row["nifti_path"])
+        images[variant] = (np.asarray(img.dataobj.get_unscaled()), img.affine)
+    (ref, ref_affine), (other, other_affine) = images.values()
+    np.testing.assert_array_equal(ref, other)
+    np.testing.assert_array_equal(ref_affine, other_affine)
