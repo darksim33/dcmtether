@@ -18,9 +18,10 @@ from nibabel.volumeutils import array_to_file
 
 from dcmtether import __version__, manifest, naming, orientation, tether
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import Series, Status, classify, read_instance
+from dcmtether.scan import Part, Series, Status, classify, read_instance
 
 DATATYPE_DIR = "anat"
+DWI_DIR = "dwi"
 NIFTI_SUFFIX = ".nii.gz"
 _NIFTI1_DATA_OFFSET = 352
 SIDECAR_SUFFIX = ".json"
@@ -46,6 +47,11 @@ class LabelInput:
     repetition_time: float | None
     echo_time: float | None
     inversion_time: float | None
+    #: The scan found diffusion volumes (from the manifest geometry, not the header).
+    diffusion: bool = False
+
+
+DWI_SUFFIX = naming.Suffix("dwi", "diffusion volumes")
 
 
 @dataclass(frozen=True)
@@ -53,9 +59,21 @@ class Planned:
     series_id: int
     subject: str | None = None
     session: str | None = None
+    #: File stem without chunk; also what name clashes are checked on.
     stem: str | None = None
     suffix: naming.Suffix | None = None
     error: str | None = None
+    ser: str | None = None
+    acq: str | None = None
+
+    @property
+    def datatype(self) -> str:
+        return DWI_DIR if self.suffix == DWI_SUFFIX else DATATYPE_DIR
+
+    def stem_for(self, chunk: int | None) -> str:
+        return naming.file_stem(
+            self.subject, self.session, self.ser, self.suffix.value, self.acq, chunk
+        )
 
 
 def _float(ds: pydicom.Dataset, keyword: str) -> float | None:
@@ -66,7 +84,7 @@ def _float(ds: pydicom.Dataset, keyword: str) -> float | None:
         return None
 
 
-def read_label_input(series_id: int, path: Path) -> LabelInput:
+def read_label_input(series_id: int, path: Path, diffusion: bool = False) -> LabelInput:
     with quiet_pydicom():
         ds = pydicom.dcmread(path, stop_before_pixels=True)
         series_number = ds.get("SeriesNumber")
@@ -82,6 +100,7 @@ def read_label_input(series_id: int, path: Path) -> LabelInput:
             repetition_time=_float(ds, "RepetitionTime"),
             echo_time=_float(ds, "EchoTime"),
             inversion_time=_float(ds, "InversionTime"),
+            diffusion=diffusion,
         )
 
 
@@ -155,17 +174,16 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
         except naming.LabelError as exc:
             errors[sid] = str(exc)
             continue
-        suffix = naming.contrast_suffix(
-            item.series_description, item.repetition_time, item.echo_time, item.inversion_time
+        suffix = (
+            DWI_SUFFIX
+            if item.diffusion
+            else naming.contrast_suffix(
+                item.series_description, item.repetition_time, item.echo_time, item.inversion_time
+            )
         )
-        stem = naming.file_stem(
-            subjects[sid],
-            sessions[sid],
-            ser,
-            suffix.value,
-            naming.acq_label(item.series_description),
-        )
-        planned[sid] = Planned(sid, subjects[sid], sessions[sid], stem, suffix)
+        acq = naming.acq_label(item.series_description)
+        stem = naming.file_stem(subjects[sid], sessions[sid], ser, suffix.value, acq)
+        planned[sid] = Planned(sid, subjects[sid], sessions[sid], stem, suffix, ser=ser, acq=acq)
         stems[stem].append(sid)
     for ids in stems.values():
         if len(ids) > 1:
@@ -183,14 +201,15 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
 
 @dataclass
 class Volume:
-    datasets: list[pydicom.Dataset]  # sorted along the slice normal
-    strings: list[tether.Strings]  # original DS/IS strings, same order
-    data: np.ndarray  # DICOM order (rows, columns, slices), raw stored values
+    datasets: list[pydicom.Dataset]  # part order: volume by volume, slices ascending
+    strings: list[tether.Strings]  # original strings, same order
+    indices: list[tuple[int, ...]]  # (slice,) or (slice, volume), same order
+    data: np.ndarray  # DICOM order (rows, columns, slices[, volumes]), raw stored values
     affine_lps: np.ndarray
 
 
-def _revalidate(paths: list[Path]) -> None:
-    """The files must still form the series that was classified as supported."""
+def _revalidate(paths: list[Path]) -> Series:
+    """The files must still form the series that was classified as convertible."""
     instances = []
     for path in paths:
         result = read_instance(path)
@@ -199,8 +218,9 @@ def _revalidate(paths: list[Path]) -> None:
         instances.append(result)
     series = Series(instances[0].series_instance_uid, instances)
     classify(series)
-    if series.status is not Status.SUPPORTED or len({i.series_instance_uid for i in instances}) > 1:
+    if series.status is Status.UNSUPPORTED or len({i.series_instance_uid for i in instances}) > 1:
         raise ConversionError("series changed since scan: " + "; ".join(series.reasons))
+    return series
 
 
 def volume_affine(datasets: list[pydicom.Dataset]) -> np.ndarray:
@@ -217,32 +237,43 @@ def volume_affine(datasets: list[pydicom.Dataset]) -> np.ndarray:
     )
 
 
-def assemble(paths: list[Path]) -> Volume:
-    _revalidate(paths)
+def first_volume(datasets: list, indices: list) -> list:
+    """The datasets of volume 0 (all of them for 3D), in slice order."""
+    chosen = [
+        (index[0], ds)
+        for ds, index in zip(datasets, indices, strict=True)
+        if index[1:] in ((), (0,))
+    ]
+    return [ds for _, ds in sorted(chosen, key=lambda item: item[0])]
+
+
+def assemble(part: Part) -> Volume:
     with quiet_pydicom():
-        datasets = [pydicom.dcmread(p) for p in paths]
-        # Before anything touches DS/IS elements: conversion loses their original strings.
+        datasets = [pydicom.dcmread(i.path) for i in part.instances]
+        # Before anything touches the elements: conversion loses their original strings.
         strings = [tether.capture_strings(ds) for ds in datasets]
-        normal = orientation.slice_normal(datasets[0].ImageOrientationPatient)
-        order = sorted(
-            range(len(datasets)),
-            key=lambda n: float(
-                np.dot(np.asarray(datasets[n].ImagePositionPatient, float), normal)
-            ),
-        )
-        datasets = [datasets[n] for n in order]
-        strings = [strings[n] for n in order]
-        data = np.stack([ds.pixel_array for ds in datasets], axis=-1)
-        affine = volume_affine(datasets)
-    return Volume(datasets, strings, data, affine)
+        planes = [ds.pixel_array for ds in datasets]
+        n_slices = 1 + max(index[0] for index in part.indices)
+        shape = (*planes[0].shape, n_slices) + ((part.n_volumes,) if part.volume_key else ())
+        # Native byte order: pixel_array of big-endian files is big-endian (e.g. ">i2").
+        data = np.empty(shape, dtype=planes[0].dtype.newbyteorder("="))
+        for plane, index in zip(planes, part.indices, strict=True):
+            data[(slice(None), slice(None), *index)] = plane
+        affine = volume_affine(first_volume(datasets, part.indices))
+    return Volume(datasets, strings, list(part.indices), data, affine)
 
 
-def rescale(datasets: list[pydicom.Dataset]) -> tuple[float, float] | None:
-    """Uniform (slope, intercept) of the series, ``None`` if absent (scan rejects non-uniform)."""
-    first = datasets[0]
-    if "RescaleSlope" not in first and "RescaleIntercept" not in first:
+def nifti_scaling(datasets: list[pydicom.Dataset]) -> tuple[float, float] | None:
+    """(slope, intercept) for scl_slope/scl_inter: the series' uniform DICOM rescale.
+
+    ``None`` if there is none, or if it differs between volumes (NIfTI has one global scaling;
+    the values then live in tether.json and the sidecar only).
+    """
+    pairs = {(_float(ds, "RescaleSlope"), _float(ds, "RescaleIntercept")) for ds in datasets}
+    if len(pairs) != 1 or pairs == {(None, None)}:
         return None
-    return float(first.get("RescaleSlope", 1.0)), float(first.get("RescaleIntercept", 0.0))
+    slope, intercept = pairs.pop()
+    return (1.0 if slope is None else slope, 0.0 if intercept is None else intercept)
 
 
 def write_nifti(path: Path, data: np.ndarray, affine: np.ndarray, scaling=None) -> None:
@@ -315,19 +346,51 @@ def _plain(value):
     return str(value)
 
 
-def sidecar(first: pydicom.Dataset, suffix: naming.Suffix) -> dict:
-    """Readable metadata (keyword: value). Not used for recovery; no patient identifiers."""
-    out = {}
+def _sidecar_value(ds: pydicom.Dataset, keyword: str, scale: float | None):
+    value = ds.get(keyword)
+    if value is None or value == "":
+        return None
+    value = _plain(value)
+    if scale is not None:
+        value = round(float(value) * scale, 9)
+    return value
+
+
+def sidecar(
+    datasets: list[pydicom.Dataset],
+    indices: list[tuple[int, ...]],
+    suffix: naming.Suffix,
+    volume_key: tuple[str, ...] = (),
+    chunk: int | None = None,
+) -> dict:
+    """Readable metadata (keyword: value). Not used for recovery; no patient identifiers.
+
+    Values come from the first instance of each volume; values that differ between volumes
+    go to ``DcmTether.PerVolume`` (one entry per volume) instead of the top level.
+    """
+    firsts: dict[int, pydicom.Dataset] = {}
+    for ds, index in zip(datasets, indices, strict=True):
+        firsts.setdefault(index[1] if len(index) > 1 else 0, ds)
+    volumes = [firsts[v] for v in sorted(firsts)]
+    out: dict = {}
+    per_volume: dict = {}
     with quiet_pydicom():
+        for keyword in volume_key:
+            per_volume[keyword] = [_sidecar_value(ds, keyword, None) for ds in volumes]
         for keyword, key, scale in _SIDECAR_KEYWORDS:
-            value = first.get(keyword)
-            if value is None or value == "":
-                continue
-            value = _plain(value)
-            if scale is not None:
-                value = round(float(value) * scale, 9)
-            out[key] = value
-    out["DcmTether"] = {"Version": __version__, "SuffixRule": suffix.rule}
+            values = [_sidecar_value(ds, keyword, scale) for ds in volumes]
+            if all(v == values[0] for v in values):
+                if values[0] is not None:
+                    out[key] = values[0]
+            else:
+                per_volume[key] = values
+    info: dict = {"Version": __version__, "SuffixRule": suffix.rule}
+    if chunk is not None:
+        info["Chunk"] = chunk
+    if volume_key:
+        info["VolumeKey"] = list(volume_key)
+        info["PerVolume"] = per_volume
+    out["DcmTether"] = info
     return out
 
 
@@ -341,43 +404,64 @@ class Outcome:
     message: str = ""
 
 
-def _convert_one(
-    paths: list[Path], source_dir: Path, plan: Planned, dataset: Path
-) -> tuple[Path, Path, Path]:
-    out_dir = dataset / f"sub-{plan.subject}" / f"ses-{plan.session}" / DATATYPE_DIR
-    nifti_path = out_dir / f"{plan.stem}{NIFTI_SUFFIX}"
-    tether_path = out_dir / f"{plan.stem}{tether.TETHER_SUFFIX}"
-    sidecar_path = out_dir / f"{plan.stem}{SIDECAR_SUFFIX}"
+def _convert_part(
+    part: Part, source_dir: Path, plan: Planned, dataset: Path, chunk: int | None
+) -> tuple[Path, ...]:
+    stem = plan.stem_for(chunk)
+    out_dir = dataset / f"sub-{plan.subject}" / f"ses-{plan.session}" / plan.datatype
+    nifti_path = out_dir / f"{stem}{NIFTI_SUFFIX}"
+    tether_path = out_dir / f"{stem}{tether.TETHER_SUFFIX}"
+    sidecar_path = out_dir / f"{stem}{SIDECAR_SUFFIX}"
     targets = (nifti_path, tether_path, sidecar_path)
     if any(t.exists() for t in targets):
         raise ConversionError("output file already exists (collisions are never overwritten)")
 
-    volume = assemble(paths)
+    volume = assemble(part)
     affine_ras = orientation.LPS_TO_RAS @ volume.affine_lps
     data_ras, affine_ras, ornt = orientation.to_closest_ras(volume.data, affine_ras)
     file_names = [Path(ds.filename).relative_to(source_dir).as_posix() for ds in volume.datasets]
     document = tether.build(
         volume.datasets,
         file_names,
-        [[k] for k in range(len(volume.datasets))],
+        [list(index) for index in volume.indices],
         volume.data.dtype,
         volume.data.shape,
         ornt,
         volume.strings,
     )
+    info = sidecar(volume.datasets, volume.indices, plan.suffix, part.volume_key, chunk)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        write_nifti(nifti_path, data_ras, affine_ras, rescale(volume.datasets))
+        write_nifti(nifti_path, data_ras, affine_ras, nifti_scaling(volume.datasets))
         tether.write(document, tether_path)
-        sidecar_path.write_text(
-            json.dumps(sidecar(volume.datasets[0], plan.suffix), indent=2) + "\n", encoding="utf-8"
-        )
+        sidecar_path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     except BaseException:
         for t in targets:
             t.unlink(missing_ok=True)
         raise
     return targets
+
+
+def _convert_series(
+    paths: list[Path], source_dir: Path, plan: Planned, dataset: Path
+) -> list[manifest.Output]:
+    """All parts of a series (one NIfTI each), or nothing: a failure removes earlier parts."""
+    parts = _revalidate(paths).parts
+    outputs: list[manifest.Output] = []
+    written: list[Path] = []
+    try:
+        for n, part in enumerate(parts, start=1):
+            chunk = n if len(parts) > 1 else None
+            targets = _convert_part(part, source_dir, plan, dataset, chunk)
+            written += targets
+            rel = [t.relative_to(dataset).as_posix() for t in targets]
+            outputs.append(manifest.Output(chunk or 1, *rel, n_volumes=part.n_volumes))
+    except BaseException:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
+    return outputs
 
 
 DATASET_README = """\
@@ -392,7 +476,11 @@ it as is. Research use only.
     sub-<subject>/ses-<session>/anat/<stem>.nii.gz       voxels (raw stored values, closest RAS)
     sub-<subject>/ses-<session>/anat/<stem>.json         human-readable sidecar (BIDS-style keys)
     sub-<subject>/ses-<session>/anat/<stem>.tether.json  everything needed to rebuild the DICOM
+    sub-<subject>/ses-<session>/dwi/<stem>.*             the same for diffusion series
     manifest.sqlite                                      scan and conversion records
+
+4D series (multi-echo, diffusion, dynamics) are one 4D NIfTI; values that differ between
+volumes are listed in the sidecar under `DcmTether.PerVolume`.
 
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
@@ -401,8 +489,11 @@ it as is. Research use only.
   several studies on the same day.
 - `acq-` (custom use): SeriesDescription reduced to letters/digits, camelCase, max 24 chars.
 - `ser-` (custom): SeriesNumber, at least two digits.
-- suffix: `T1w`, `T2w`, `PDw`, `FLAIR` from description keywords or TR/TE/TI, else `MR`; the
-  rule used is recorded in the sidecar under `DcmTether.SuffixRule`.
+- `chunk-`: one per image plane when a series holds several (e.g. localizers), numbered in
+  InstanceNumber order.
+- suffix: `dwi` for diffusion series; else `T1w`, `T2w`, `PDw`, `FLAIR` from description
+  keywords or TR/TE/TI, else `MR`; the rule used is recorded in the sidecar under
+  `DcmTether.SuffixRule`.
 """
 
 
@@ -412,21 +503,29 @@ def _write_readme(dataset: Path) -> None:
         readme.write_text(DATASET_README, encoding="utf-8")
 
 
+def _is_diffusion(geometry_json: str) -> bool:
+    geometry = json.loads(geometry_json)
+    keys = [geometry.get("volume_key", [])] + [
+        p.get("volume_key", []) for p in geometry.get("parts", [])
+    ]
+    return any("DiffusionBValue" in key for key in keys)
+
+
 def convert_dataset(dataset: Path) -> list[Outcome]:
-    """Convert every supported, not yet converted series in the dataset's manifest."""
+    """Convert every supported or split, not yet converted series in the dataset's manifest."""
     db = manifest.open_manifest(dataset)
     _write_readme(dataset)
     try:
         root = manifest.source_root(db)
         rows = db.execute(
-            "SELECT id, source_dir, conversion_status FROM series WHERE status = 'supported' "
-            "ORDER BY id"
+            "SELECT id, source_dir, conversion_status, geometry FROM series "
+            "WHERE status IN ('supported', 'split') ORDER BY id"
         ).fetchall()
         inputs, outcomes = [], []
         for row in rows:
             first = root / manifest.instance_paths(db, row["id"])[0]
             try:
-                inputs.append(read_label_input(row["id"], first))
+                inputs.append(read_label_input(row["id"], first, _is_diffusion(row["geometry"])))
             except Exception as exc:
                 manifest.record_failed(db, row["id"], f"cannot read header: {exc!r}")
                 outcomes.append(
@@ -445,7 +544,7 @@ def convert_dataset(dataset: Path) -> list[Outcome]:
                 continue
             paths = [root / p for p in manifest.instance_paths(db, sid)]
             try:
-                targets = _convert_one(paths, root / row["source_dir"], plan, dataset)
+                outputs = _convert_series(paths, root / row["source_dir"], plan, dataset)
             except (ConversionError, tether.TetherError) as exc:
                 manifest.record_failed(db, sid, str(exc))
                 outcomes.append(Outcome(sid, False, str(exc)))
@@ -456,8 +555,7 @@ def convert_dataset(dataset: Path) -> list[Outcome]:
                     Outcome(sid, False, f"unexpected error ({type(exc).__name__}), see manifest")
                 )
                 continue
-            rel = [t.relative_to(dataset).as_posix() for t in targets]
-            manifest.record_converted(db, sid, plan.subject, plan.session, *rel)
+            manifest.record_converted(db, sid, plan.subject, plan.session, outputs)
             outcomes.append(Outcome(sid, True))
         return outcomes
     finally:
