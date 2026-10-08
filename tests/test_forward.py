@@ -15,6 +15,7 @@ from synthetic import (
     SeriesSpec,
     SyntheticSeries,
     make_4d,
+    make_enhanced,
     make_localizer,
     make_series,
     make_two_planes,
@@ -208,7 +209,7 @@ def test_tether_document(tmp_path):
     convert_dataset(dataset)
     doc = json.loads((dataset / DEFAULT_DIR / f"{DEFAULT_STEM}.tether.json").read_text("utf-8"))
 
-    assert doc["format_version"] == 2
+    assert doc["format_version"] == 3
     assert doc["source"]["series_instance_uid"] == series.series_instance_uid
     assert doc["source"]["n_instances"] == 5
     assert doc["pixel"]["dtype"] == "uint16"
@@ -580,3 +581,45 @@ def test_lossless_compressed_gives_the_same_nifti_as_uncompressed(tmp_path, test
     (ref, ref_affine), (other, other_affine) = images.values()
     np.testing.assert_array_equal(ref, other)
     np.testing.assert_array_equal(ref_affine, other_affine)
+
+
+# --- enhanced multi-frame ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spec", ["axial", "oblique-40", "descending", "single-slice"])
+def test_enhanced_3d_voxels_match_ground_truth(tmp_path, spec):
+    series = make_enhanced(make_series(SPECS[spec]))
+    dataset = _dataset(tmp_path, series)
+    outcomes = convert_dataset(dataset)
+    assert [o.ok for o in outcomes] == [True], [o.message for o in outcomes]
+    _world_space_check(_single_output(dataset), series)
+
+
+@pytest.mark.parametrize("kind", ["echo", "dynamic", "diffusion"])
+@pytest.mark.parametrize("n_files", [1, 3])
+def test_enhanced_4d_voxels_match_ground_truth(tmp_path, kind, n_files):
+    series = make_enhanced(make_4d(SPECS["oblique"], kind=kind), n_files=n_files)
+    dataset = _dataset(tmp_path, series)
+    outcomes = convert_dataset(dataset)
+    assert [o.ok for o in outcomes] == [True], [o.message for o in outcomes]
+    _world_space_check(_single_output(dataset), series)
+
+
+def test_enhanced_tether_lists_frames(tmp_path):
+    dataset = _dataset(tmp_path, make_enhanced(make_4d(n_volumes=2), n_files=2))
+    convert_dataset(dataset)
+    nifti = _single_output(dataset)
+    doc = json.loads(nifti.with_suffix("").with_suffix(".tether.json").read_text("utf-8"))
+    assert doc["pixel"]["shape_dicom"] == [6, 8, 5, 2]
+    assert [i["frames"] for i in doc["instances"]] == [[[k, v] for k in range(5)] for v in range(2)]
+    assert all("index" not in i for i in doc["instances"])
+
+
+def test_enhanced_sidecar_uses_functional_groups(tmp_path):
+    dataset = _dataset(tmp_path, make_enhanced(make_4d(kind="echo")))
+    convert_dataset(dataset)
+    nifti = _single_output(dataset)
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    assert sidecar["DcmTether"]["VolumeKey"] == ["EffectiveEchoTime"]
+    assert sidecar["DcmTether"]["PerVolume"]["EchoTime"] == [0.015, 0.03, 0.045]
+    assert sidecar["SliceThickness"] == 3.0  # from PixelMeasuresSequence

@@ -26,6 +26,7 @@ from synthetic import (
     SyntheticSeries,
     compressed,
     make_4d,
+    make_enhanced,
     make_localizer,
     make_series,
     make_two_planes,
@@ -157,6 +158,31 @@ def test_cli_to_dcm_reports_the_transfer_syntax_change(tmp_path):
         "Wrote 2 DICOM files.\n"
         "Transfer syntax changed from RLE Lossless to Explicit VR Little Endian (lossless).\n"
     )
+
+
+# --- enhanced multi-frame ----------------------------------------------------------------------
+
+
+ENHANCED_CASES = [(None, 1)] + [(kind, n) for kind in KINDS for n in (1, 3)]  # 4D: 3 volumes
+
+
+@pytest.mark.parametrize(("kind", "n_files"), ENHANCED_CASES)
+def test_round_trip_enhanced(tmp_path, kind, n_files):
+    classic = make_series() if kind is None else make_4d(kind=kind)
+    series = make_enhanced(classic, n_files=n_files)
+    report = round_trip(_write(series, tmp_path), tmp_path)
+    _assert_identical(report)
+    assert report.n_compared == n_files
+
+
+def test_round_trip_enhanced_with_per_volume_rescale(tmp_path):
+    classic = make_4d(n_volumes=3, volume_rescale=[(1.0, 0.0), (2.0, 0.0), (2.0, -5.0)])
+    _assert_identical(round_trip(_write(make_enhanced(classic), tmp_path), tmp_path))
+
+
+def test_round_trip_enhanced_compressed(tmp_path):
+    series = compressed(make_enhanced(make_4d(kind="dynamic")), RLELossless)
+    _assert_identical_but_decompressed(round_trip(_write(series, tmp_path), tmp_path), RLELossless)
 
 
 def test_round_trip_with_uniform_rescale(tmp_path):

@@ -17,6 +17,7 @@ from synthetic import (
     compressed,
     flipped,
     make_4d,
+    make_enhanced,
     make_localizer,
     make_series,
     make_two_planes,
@@ -26,6 +27,8 @@ from synthetic import (
 
 from dcmtether import scan as scan_module
 from dcmtether.scan import Status, scan
+
+SPECS_OBLIQUE = SeriesSpec(orientation=rotated(CORONAL, (1.0, 1.0, 0.0), 17.0))
 
 
 def _scan(tmp_path: Path, *series: SyntheticSeries):
@@ -115,6 +118,67 @@ def test_split_series_with_an_irregular_part_is_unsupported(tmp_path):
     reasons = _unsupported(tmp_path, s)
     assert reasons[0] == "2 distinct image planes (orientation, matrix or pixel spacing)"
     assert reasons[1].startswith("plane 1: missing slices")
+
+
+# --- enhanced multi-frame ----------------------------------------------------------------------
+
+ENHANCED_KEYS = {
+    "echo": ["EffectiveEchoTime"],
+    "dynamic": ["TemporalPositionIndex"],
+    "diffusion": ["DiffusionBValue", "DiffusionGradientOrientation"],
+}
+
+
+def test_enhanced_3d_is_supported(tmp_path):
+    result = _scan(tmp_path, make_enhanced(make_series(SPECS_OBLIQUE)))
+    series = _only(result)
+    assert series.status is Status.SUPPORTED, series.reasons
+    assert len(series.files) == 1
+    assert len(series.instances) == 5  # one per frame
+    [part] = series.parts
+    assert [i.frame for i in part.instances] == [0, 1, 2, 3, 4]
+    assert series.geometry["n_positions"] == 5
+
+
+@pytest.mark.parametrize(("kind", "key"), ENHANCED_KEYS.items(), ids=ENHANCED_KEYS.keys())
+@pytest.mark.parametrize("n_files", [1, 3])
+def test_enhanced_4d_is_supported(tmp_path, kind, key, n_files):
+    series = _only(_scan(tmp_path, make_enhanced(make_4d(kind=kind), n_files=n_files)))
+    assert series.status is Status.SUPPORTED, series.reasons
+    assert series.geometry["volume_key"] == key
+    assert len(series.files) == n_files
+    [part] = series.parts
+    assert part.indices == [(k, v) for v in range(3) for k in range(5)]
+
+
+def test_enhanced_without_functional_groups_is_unsupported(tmp_path):
+    s = make_enhanced(make_series())
+    for ds in s.datasets:
+        del ds.SharedFunctionalGroupsSequence
+        del ds.PerFrameFunctionalGroupsSequence
+    assert _unsupported(tmp_path, s) == [
+        "missing or invalid ImagePositionPatient, ImageOrientationPatient, PixelSpacing"
+    ]
+
+
+def test_multi_frame_classic_mr_is_still_unsupported(tmp_path):
+    s = make_series(SeriesSpec(n_slices=1))
+    s.datasets[0].NumberOfFrames = 1
+    assert "multi-frame instances" in _unsupported(tmp_path, s)
+
+
+def test_volumes_by_combined_key(tmp_path):
+    # 2 time points x 2 echoes: no single attribute tells the 4 volumes apart.
+    s = make_4d(n_volumes=4, kind="none")
+    for ds in s.datasets:
+        v = (ds.InstanceNumber - 1) // 5
+        ds.TemporalPositionIdentifier = v // 2 + 1
+        ds.EchoTime = DS(15 * (v % 2 + 1))
+    series = _only(_scan(tmp_path, s))
+    assert series.status is Status.SUPPORTED, series.reasons
+    assert series.geometry["volume_key"] == ["TemporalPositionIdentifier", "EchoTime"]
+    [part] = series.parts
+    assert part.indices == [(k, v) for v in range(4) for k in range(5)]
 
 
 # --- compressed --------------------------------------------------------------------------------
@@ -396,8 +460,8 @@ def test_real_ge_adc_series_is_supported(tmp_path, test_file):
         ("pydicom/MR_small.dcm", Status.SUPPORTED, None),
         ("pydicom/MR-SIEMENS-DICOM-WithOverlays.dcm", Status.SUPPORTED, None),
         ("pydicom/MR_small_bigendian.dcm", Status.SUPPORTED, None),
-        ("pydicom/emri_small.dcm", Status.UNSUPPORTED,
-         "SOP class not supported: Enhanced MR Image Storage"),
+        ("pydicom/emri_small.dcm", Status.UNSUPPORTED,  # enhanced, but no functional groups
+         "missing or invalid ImagePositionPatient, ImageOrientationPatient, PixelSpacing"),
         ("WG04/J2KR/MR1_J2KR", Status.SUPPORTED, None),
         ("WG04/RLE/MR2_RLE", Status.SUPPORTED, None),
         ("WG04/JPLL/MR3_JPLL", Status.SUPPORTED, None),

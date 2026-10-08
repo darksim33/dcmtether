@@ -12,6 +12,7 @@ Conventions (DICOM PS3.3 C.7.6.2):
 - Slice normal = ``row_dir x col_dir``; slice offsets are measured along it.
 """
 
+import copy
 import random
 import uuid
 from collections.abc import Sequence
@@ -20,7 +21,13 @@ from pathlib import Path
 
 import numpy as np
 from pydicom import Dataset, FileMetaDataset
-from pydicom.uid import PYDICOM_IMPLEMENTATION_UID, ExplicitVRLittleEndian, MRImageStorage
+from pydicom.sequence import Sequence as PydicomSequence
+from pydicom.uid import (
+    PYDICOM_IMPLEMENTATION_UID,
+    EnhancedMRImageStorage,
+    ExplicitVRLittleEndian,
+    MRImageStorage,
+)
 from pydicom.valuerep import DS
 
 UID_NAMESPACE = uuid.UUID("5f0c6f4e-1d2b-4c43-9a35-7a0d6b8f2e11")
@@ -343,6 +350,104 @@ def compressed(series: SyntheticSeries, transfer_syntax: str) -> SyntheticSeries
     for ds in series.datasets:
         ds.compress(transfer_syntax, generate_instance_uid=False)  # keep the SOPInstanceUID
     return series
+
+
+#: Per-image attributes that Enhanced MR moves into functional groups.
+_PER_FRAME = (
+    "ImagePositionPatient",
+    "ImageOrientationPatient",
+    "PixelSpacing",
+    "SliceThickness",
+    "RescaleSlope",
+    "RescaleIntercept",
+    "RescaleType",
+    "EchoTime",
+    "EchoNumbers",
+    "TemporalPositionIdentifier",
+    "TriggerTime",
+    "InstanceNumber",
+    "SOPInstanceUID",
+    "PixelData",
+    "DiffusionBValue",
+    "DiffusionGradientOrientation",
+)
+
+
+def _item(**values) -> Sequence:
+    item = Dataset()
+    for keyword, value in values.items():
+        if value is not None:
+            setattr(item, keyword, value)
+    return PydicomSequence([item])
+
+
+def _frame_groups(ds: Dataset) -> Dataset:
+    """Per-frame functional groups for one classic image."""
+    groups = Dataset()
+    groups.PlanePositionSequence = _item(ImagePositionPatient=ds.ImagePositionPatient)
+    groups.FrameContentSequence = _item(
+        TemporalPositionIndex=ds.get("TemporalPositionIdentifier"),
+        FrameAcquisitionNumber=ds.InstanceNumber,
+    )
+    groups.MREchoSequence = _item(EffectiveEchoTime=float(ds.EchoTime))
+    if "DiffusionBValue" in ds:
+        gradient = ds.get("DiffusionGradientOrientation")
+        diffusion = _item(
+            DiffusionBValue=ds.DiffusionBValue,
+            DiffusionDirectionality="DIRECTIONAL" if gradient is not None else "NONE",
+        )
+        if gradient is not None:
+            diffusion[0].DiffusionGradientDirectionSequence = _item(
+                DiffusionGradientOrientation=list(gradient)
+            )
+        groups.MRDiffusionSequence = diffusion
+    if "RescaleSlope" in ds:
+        groups.PixelValueTransformationSequence = _item(
+            RescaleSlope=ds.RescaleSlope, RescaleIntercept=ds.RescaleIntercept, RescaleType="US"
+        )
+    return groups
+
+
+def make_enhanced(classic: SyntheticSeries, n_files: int = 1) -> SyntheticSeries:
+    """The same images as Enhanced MR: ``n_files`` multi-frame instances.
+
+    Frames are in InstanceNumber order of ``classic`` (volume by volume), split evenly over the
+    files. Geometry, rescale, echo time, temporal position and diffusion move into functional
+    groups (pixel measures and orientation shared, the rest per frame). ``volume`` and
+    ``affine_lps`` are those of ``classic``.
+    """
+    images = sorted(classic.datasets, key=lambda ds: ds.InstanceNumber)
+    if len(images) % n_files:
+        raise ValueError("frames must split evenly over the files")
+    per_file = len(images) // n_files
+    datasets = []
+    for f in range(n_files):
+        frames = images[f * per_file : (f + 1) * per_file]
+        first = frames[0]
+        ds = Dataset()
+        ds.file_meta = FileMetaDataset()
+        ds.file_meta.update(first.file_meta)
+        for elem in first:
+            if elem.keyword not in _PER_FRAME:
+                ds.add(copy.deepcopy(elem))
+        sop_uid = synthetic_uid("enhanced", classic.series_instance_uid, f)
+        ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID = EnhancedMRImageStorage
+        ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID = sop_uid
+        ds.InstanceNumber = f + 1
+        ds.ImageType = ["ORIGINAL", "PRIMARY", "M", "NONE"]
+        ds.NumberOfFrames = len(frames)
+        shared = Dataset()
+        shared.PixelMeasuresSequence = _item(
+            PixelSpacing=first.PixelSpacing, SliceThickness=first.SliceThickness
+        )
+        shared.PlaneOrientationSequence = _item(
+            ImageOrientationPatient=first.ImageOrientationPatient
+        )
+        ds.SharedFunctionalGroupsSequence = PydicomSequence([shared])
+        ds.PerFrameFunctionalGroupsSequence = PydicomSequence([_frame_groups(fr) for fr in frames])
+        ds.PixelData = b"".join(fr.PixelData for fr in frames)
+        datasets.append(ds)
+    return replace(classic, datasets=datasets)
 
 
 def write_series(series: SyntheticSeries, directory: Path) -> list[Path]:

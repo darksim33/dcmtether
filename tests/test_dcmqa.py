@@ -4,11 +4,12 @@ import gzip
 import io
 import json
 import re
+import sqlite3
 
 import dcmqa
 import pytest
 import testdata
-from roundtrip import manifest_rows, output_rows
+from roundtrip import output_rows
 
 from dcmtether.compare import compare_series, dicom_files
 from dcmtether.forward import convert_dataset
@@ -84,7 +85,7 @@ def test_gz_files_are_verified_then_decompressed(tmp_path, monkeypatch):
 #: input type became supported, or something regressed. See docs/dev/test-data.md.
 EXPECTED_CONVERTED = {
     "dcm_qa_12bit": 0,  # Siemens mosaic
-    "dcm_qa_enh": 0,  # enhanced multi-frame (Phase 4c)
+    "dcm_qa_enh": 5,  # enhanced multi-frame: Canon DTI, Philips T1/fieldmap/fMRI, Siemens XA10
     "dcm_qa_me": 2,  # Siemens multi-echo GRE (4D, EchoNumbers) + a 3D series
     "dcm_qa_nih": 0,  # GE fMRI (volumes told apart only by InstanceNumber) + Siemens mosaic
     "dcm_qa_pdt2": 1,  # Siemens dual-echo PD/T2 (4D, EchoNumbers)
@@ -107,12 +108,18 @@ def test_round_trip_real_data(tmp_path, dcm_qa, repository):
     assert all(o.ok for o in outcomes), [o.message for o in outcomes]
     assert len(outcomes) == EXPECTED_CONVERTED[repository]
 
-    series = {r["id"]: r for r in manifest_rows(dataset)}
     for row in output_rows(dataset):
         rebuilt = tmp_path / f"rebuilt-{row['series_id']}"
         to_dicom(dataset / row["nifti_path"], rebuilt)
-        source = root / series[row["series_id"]]["source_dir"]
-        report = compare_series(dicom_files(source), dicom_files(rebuilt))
+        # Compare with the series' own files: several series may share a source folder.
+        with sqlite3.connect(dataset / "manifest.sqlite") as db:
+            originals = [
+                root / path
+                for (path,) in db.execute(
+                    "SELECT path FROM instances WHERE series_id = ?", (row["series_id"],)
+                )
+            ]
+        report = compare_series(sorted(originals), dicom_files(rebuilt))
         assert report.identical, report.lines()
         assert report.notes == []
 
@@ -129,3 +136,19 @@ def test_unsupported_real_data_is_classified_not_guessed(dcm_qa):
     )
     statuses = {s.status for s in scan(dcm_qa("dcm_qa_me")).series}
     assert statuses == {Status.SUPPORTED, Status.UNSUPPORTED}
+
+
+@pytest.mark.network
+def test_rebuilt_enhanced_files_validate_like_originals(tmp_path, dcm_qa, iod_errors):
+    root = dcm_qa("dcm_qa_enh", "Siemens")
+    dataset = tmp_path / "dataset"
+    write_manifest(dataset, scan(root))
+    assert all(o.ok for o in convert_dataset(dataset))
+    [row] = output_rows(dataset)
+    rebuilt = tmp_path / "rebuilt"
+    to_dicom(dataset / row["nifti_path"], rebuilt)
+    by_name = {p.name: p for p in dicom_files(rebuilt)}
+    originals = [p for p in dicom_files(root) if p.name in by_name]
+    assert len(originals) == 4
+    for original in originals:
+        assert iod_errors(by_name[original.name]) == iod_errors(original)
