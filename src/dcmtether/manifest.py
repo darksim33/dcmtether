@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -179,6 +179,74 @@ def _relative(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+_SERIES_COLUMNS = (
+    "series_instance_uid, study_instance_uid, status, reasons, modality, sop_class_uid, "
+    "transfer_syntax_uid, implementation_class_uid, implementation_version_name, manufacturer, "
+    "manufacturer_model_name, software_versions, body_part_examined, series_number, "
+    "series_description, n_instances, source_dir, geometry"
+)
+
+
+def _files(series) -> dict[Path, object]:
+    """One instance per file (multi-frame files hold several images)."""
+    files: dict[Path, object] = {}
+    for inst in series.instances:
+        files.setdefault(inst.path, inst)
+    return files
+
+
+def _series_values(series, root: Path) -> tuple:
+    first = series.first
+    source_dir = Path(os.path.commonpath([path.parent for path in series.files]))
+    return (
+        series.series_instance_uid,
+        first.study_instance_uid,
+        series.status.value,
+        json.dumps(series.reasons),
+        first.modality,
+        first.sop_class_uid,
+        first.transfer_syntax_uid,
+        first.implementation_class_uid,
+        first.implementation_version_name,
+        first.manufacturer,
+        first.manufacturer_model_name,
+        first.software_versions,
+        first.body_part_examined,
+        first.series_number,
+        first.series_description,
+        len(_files(series)),
+        _relative(source_dir, root),
+        json.dumps(series.geometry),
+    )
+
+
+def _insert_instances(db: sqlite3.Connection, series_id: int, series, root: Path) -> None:
+    db.executemany(
+        "INSERT INTO instances (path, series_id, sop_instance_uid, instance_number) "
+        "VALUES (?, ?, ?, ?)",
+        [
+            (_relative(i.path, root), series_id, i.sop_instance_uid, i.instance_number)
+            for i in _files(series).values()
+        ],
+    )
+
+
+def _insert_series(db: sqlite3.Connection, series_id: int, series, root: Path) -> None:
+    db.execute(
+        f"INSERT INTO series (id, {_SERIES_COLUMNS}) VALUES ({', '.join('?' * 19)})",
+        (series_id, *_series_values(series, root)),
+    )
+    _insert_instances(db, series_id, series, root)
+
+
+def _replace_skipped(db: sqlite3.Connection, result: ScanResult) -> None:
+    db.execute("DELETE FROM skipped_files")
+    db.executemany(
+        "INSERT INTO skipped_files (path, reason) VALUES (?, ?)",
+        [(_relative(s.path, result.root), s.reason) for s in result.skipped],
+    )
+
+
 def write_manifest(dataset: Path, result: ScanResult) -> Path:
     """Create the manifest for ``result``. Refuses to overwrite an existing one.
 
@@ -204,57 +272,89 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
         )
         _upgrade(db)
         for series_id, series in enumerate(result.series, start=1):
-            first = series.first
-            source_dir = Path(os.path.commonpath([path.parent for path in series.files]))
-            files = {}  # one row per file (multi-frame files hold several images)
-            for inst in series.instances:
-                files.setdefault(inst.path, inst)
-            db.execute(
-                """INSERT INTO series (
-                    id, series_instance_uid, study_instance_uid, status, reasons, modality,
-                    sop_class_uid, transfer_syntax_uid, implementation_class_uid,
-                    implementation_version_name, manufacturer, manufacturer_model_name,
-                    software_versions, body_part_examined, series_number, series_description,
-                    n_instances, source_dir, geometry
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    series_id,
-                    series.series_instance_uid,
-                    first.study_instance_uid,
-                    series.status.value,
-                    json.dumps(series.reasons),
-                    first.modality,
-                    first.sop_class_uid,
-                    first.transfer_syntax_uid,
-                    first.implementation_class_uid,
-                    first.implementation_version_name,
-                    first.manufacturer,
-                    first.manufacturer_model_name,
-                    first.software_versions,
-                    first.body_part_examined,
-                    first.series_number,
-                    first.series_description,
-                    len(files),
-                    _relative(source_dir, result.root),
-                    json.dumps(series.geometry),
-                ),
-            )
-            db.executemany(
-                "INSERT INTO instances (path, series_id, sop_instance_uid, instance_number) "
-                "VALUES (?, ?, ?, ?)",
-                [
-                    (
-                        _relative(i.path, result.root),
-                        series_id,
-                        i.sop_instance_uid,
-                        i.instance_number,
-                    )
-                    for i in files.values()
-                ],
-            )
-        db.executemany(
-            "INSERT INTO skipped_files (path, reason) VALUES (?, ?)",
-            [(_relative(s.path, result.root), s.reason) for s in result.skipped],
-        )
+            _insert_series(db, series_id, series, result.root)
+        _replace_skipped(db, result)
     partial.replace(target)
     return target
+
+
+@dataclass
+class ManifestUpdate:
+    """What :func:`update_manifest` did, by series id."""
+
+    new: list[int] = field(default_factory=list)
+    #: Not converted yet (or failed): classification and files replaced by the new scan.
+    rescanned: list[int] = field(default_factory=list)
+    #: Converted, files unchanged.
+    unchanged: list[int] = field(default_factory=list)
+    #: Converted, but the source files differ now: reported, never reconverted automatically.
+    changed_after_conversion: list[int] = field(default_factory=list)
+    #: In the manifest but not found by the new scan (kept).
+    missing: list[int] = field(default_factory=list)
+
+
+def update_manifest(dataset: Path, result: ScanResult) -> ManifestUpdate:
+    """Merge a new scan of the same SOURCE into an existing manifest (``dcmtether run``).
+
+    Ids of known series never change; new series get the next ids. Converted series are left
+    alone. The whole update is one transaction.
+    """
+    db = open_manifest(dataset)
+    update = ManifestUpdate()
+    try:
+        if Path(source_root(db)) != Path(result.root):
+            raise ManifestError("SOURCE is not the folder this dataset was scanned from")
+        known = {
+            row["series_instance_uid"]: (row["id"], row["conversion_status"])
+            for row in db.execute("SELECT id, series_instance_uid, conversion_status FROM series")
+        }
+        next_id = 1 + max((sid for sid, _ in known.values()), default=0)
+        with db:
+            for series in result.series:
+                entry = known.get(series.series_instance_uid)
+                if entry is None:
+                    _insert_series(db, next_id, series, result.root)
+                    update.new.append(next_id)
+                    next_id += 1
+                    continue
+                series_id, conversion_status = entry
+                if conversion_status == "converted":
+                    old = set(instance_paths(db, series_id))
+                    new = {_relative(path, result.root) for path in series.files}
+                    target = update.unchanged if old == new else update.changed_after_conversion
+                    target.append(series_id)
+                    continue
+                db.execute(
+                    f"UPDATE series SET ({_SERIES_COLUMNS}) = ({', '.join('?' * 18)}) WHERE id = ?",
+                    (*_series_values(series, result.root), series_id),
+                )
+                db.execute("DELETE FROM instances WHERE series_id = ?", (series_id,))
+                _insert_instances(db, series_id, series, result.root)
+                update.rescanned.append(series_id)
+            scanned = {s.series_instance_uid for s in result.series}
+            update.missing = sorted(sid for uid, (sid, _) in known.items() if uid not in scanned)
+            _replace_skipped(db, result)
+            db.execute(
+                "UPDATE meta SET value = ? WHERE key = 'scanned_at'",
+                (datetime.now(UTC).isoformat(timespec="seconds"),),
+            )
+    finally:
+        db.close()
+    return update
+
+
+def series_for_output(dataset: Path, nifti: Path) -> int | None:
+    """Manifest series id of an output NIfTI of ``dataset`` (None if it is not one)."""
+    try:
+        rel = Path(nifti).resolve().relative_to(Path(dataset).resolve()).as_posix()
+    except ValueError:
+        return None
+    with closing(sqlite3.connect(manifest_path(dataset))) as db:
+        row = db.execute("SELECT series_id FROM outputs WHERE nifti_path = ?", (rel,)).fetchone()
+    return row[0] if row else None
+
+
+def series_ids(dataset: Path) -> dict[str, int]:
+    """SeriesInstanceUID -> manifest series id (for reports by id; never print the UIDs)."""
+    with closing(sqlite3.connect(manifest_path(dataset))) as db:
+        return dict(db.execute("SELECT series_instance_uid, id FROM series"))
