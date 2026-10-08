@@ -1,7 +1,7 @@
 # PLAN — DCMtether: DICOM ⇄ NIfTI round-trip tool
 
 > Project name: **DCMtether** — package, import and CLI: `dcmtether`. Recovery files: `*.tether.json`.
-> Status: Phases 0–5 done (5a SEG, 5b Parametric Map, 5c derived MR; viewer check in 3D Slicer/PACS pending, done locally); next: Phase 6 (packaging & pipeline). This file records goals, settled decisions, the phase plan and open questions.
+> Status: Phases 0–6 done (viewer check of derivatives pending, done locally); remaining work: future features (§5). This file records goals, settled decisions, the phase plan and open questions.
 > Update it whenever a decision is made so later sessions don't re-litigate it.
 
 ---
@@ -50,6 +50,7 @@ as properly referenced DICOM objects (DICOM SEG, Parametric Map, or derived MR i
 | SEG (5a) | (decided 2026-10-08) Segment metadata = **dcmqi JSON template** (one label map: `segmentAttributes[0]`); `dcmtether to-seg NIFTI LABELS METADATA OUTPUT`. Label map must lie on the **source NIfTI grid** (same shape/affine; other grids rejected for now); integer values, every value declared; labelIDs renumbered to segment numbers 1..n (reported). **BINARY** segmentation (Segmentation Storage), not the newer LABELMAP SOP class: target viewers are **3D Slicer and clinical PACS** (decided 2026-10-08), whose LABELMAP support is new/uneven. Algorithm version defaults to `unknown`, family to CID 7162 "Artificial Intelligence" (optional template extensions `SegmentAlgorithmVersion`, `SegmentAlgorithmFamilyCodeSequence`). 3D sources only (4D and multi-file enhanced sources rejected). |
 | Parametric Map (5b) | (decided 2026-10-08) `dcmtether to-pmap NIFTI MAP METADATA OUTPUT`; metadata = **dcmqi parametric map template** (QuantityValueCode, MeasurementUnitsCode required; MeasurementMethodCode optional → second QuantityDefinition item "Measurement Method"; other template keys ignored). Same grid rule as SEG. **Lossless values:** float32/float64 → Float/DoubleFloatPixelData (slope 1); uint8/uint16 → stored as is with the NIfTI scaling as RWVM slope/intercept; signed or wider integers → shifted into uint16 with the intercept adjusted (range > 65535 → rejected, never rounded). NaN/Inf rejected. ContentQualification `RESEARCH`. Shared derivative code lives in `derived.py` (source rebuild, grid check, highdicom geometry normalisation, UIDs, labeling, writing). |
 | Derived MR (5c) | (decided 2026-10-08) `dcmtether to-mr NIFTI DERIVATIVE METADATA OUTPUT_DIR`: one classic MR image per source slice from the source header as template (fallback for PACS without SEG/PM). Inputs: maps (dcmqi PM template) and label maps (dcmqi SEG template, **label values as pixels**). **Private tags dropped**, overlays/icons/LUTs/window/rescale/compression flags and device identifiers removed; new deterministic UIDs, `ImageType DERIVED\SECONDARY\OTHER`, SourceImageSequence, DerivationDescription, ImageComments + SeriesDescription research labels, BurnedInAnnotation NO, Manufacturer/model/software = dcmtether. Integer maps and labels are exact; **float maps are quantised to 16 bits** (MR pixels are integers) and the max error is reported — the Parametric Map stays the lossless form. RescaleSlope/Intercept/Type are written although the classic MR IOD has no Modality LUT module (as Philips does; PACS apply them). Enhanced and 4D sources rejected. |
+| Pipeline (6) | (decided 2026-10-08) Batch mode = **`dcmtether run SOURCE DATASET`** only (scan + to-nii, rerunnable: new series appended with new ids, non-converted series rescanned, failed retried, converted series never touched — source changes after conversion are reported; another SOURCE is refused). **Logging = JSON lines in `DATASET/logs/dcmtether.jsonl`**, fields from a fixed allowlist (`log.ALLOWED_FIELDS`, unknown keys raise), so no element values/UIDs/paths can be logged; `to-dcm`/`to-seg`/`to-pmap`/`to-mr` log into the dataset their NIfTI belongs to. Docs = short README + `docs/usage.md`, `docs/formats.md`, `docs/supported-inputs.md`, example templates in `docs/examples/` (tested). |
 | Research labeling | SeriesDescription suffix "RESEARCH USE ONLY", ContentLabel/ContentDescription (SEG/PM), ImageComments, Manufacturer/SoftwareVersions = this tool + version. No burned-in watermark by default (if ever added: set `BurnedInAnnotation = YES`). |
 | dcm2niix | Not used for the recovery path. Used as a **test oracle** and optionally to produce the human sidecar. dcm2niix does not reorient to RAS, so oracle comparisons are done **in world space** (via the affines / index permutation), never on raw arrays. |
 | Synthetic test data | PHI-free series generated with pydicom from a template: all axis permutations/flips, oblique angles, gaps, mixed thickness, localizers, per-slice rescale. Primary fixture source for Phases 1–3; complements `dicom-test-files`. |
@@ -290,11 +291,31 @@ Outcome and decisions:
 ### Phase 6 — Packaging & pipeline
 - Batch mode, resumable runs via the manifest, structured logging (no PHI in logs by default).
 - README for users; document custom BIDS entities.
-- Optional: BIDS exporter for subsets that need strict compliance.
+
+**Status: ✅ done (2026-10-08, branch `phase-6-pipeline`).** Format + lint clean, 589 tests pass, none skipped. Code: `src/dcmtether/log.py`, `manifest.update_manifest`, `dcmtether run`, `--verbose` for `run`/`to-nii`; docs under `docs/`.
+Outcome and decisions:
+- `run` keeps manifest ids stable across reruns; the update is one transaction; skipped files are replaced by the latest scan. Outcomes now carry the number of NIfTIs written (chunks).
+- Logs: `start`/`end` around every command, `error` with the safe message, per-series `series_classified`/`series_converted`/`series_failed`, `scanned`, `manifest_updated`, `written`. A test asserts no names, UIDs, dates or paths reach the log.
+- Docs are kept honest by tests: every CLI command appears in `docs/usage.md`, the example templates parse, documented log fields exist, README links resolve.
 
 ### Future features (not scheduled)
 - **Docker image** (incl. dcm2niix and dciodvfy for checks). Moved out of Phase 6 on 2026-10-08;
   the tool installs with `uv`, so it isn't needed for the planned phases.
+- **Dataset-wide to-dcm** (rebuild every converted series into `OUTPUT/<series id>/`, optionally
+  followed by compare). Moved out of Phase 6 on 2026-10-08.
+- **Batch derivatives** (convert everything under `dataset/derivatives/<tool>/` to SEG /
+  Parametric Map / derived MR in one go). Moved out of Phase 6 on 2026-10-08.
+- **BIDS exporter** for subsets that need strict compliance. Moved out of Phase 6 on 2026-10-08.
+- **Anonymizer** (added 2026-10-08): a de-identified *export* of a dataset that can be shared:
+  pseudonymous `sub-`/`ses-` labels instead of name/date-based ones (mapping kept locally, never
+  exported), DICOM PS3.15 Annex E Basic Profile (+ chosen options) applied to `*.tether.json`,
+  sidecars and derivatives, consistent UID remapping (`2.25.` UIDs) and date shifting per
+  subject, no manifest/source paths. The original dataset stays untouched; an anonymized export
+  is by definition no longer element-identical to the source DICOM. Related: open question on
+  anonymized *inputs* (§7).
+- From earlier phases: InstanceNumber order as last-resort volume key (GE fMRI, §7), vendor
+  private diffusion keys + `.bval`/`.bvec`, Siemens mosaic, derivatives of 4D sources, arbitrary
+  derivative grids.
 
 ---
 
