@@ -73,13 +73,31 @@ def _words(text: str) -> list[str]:
     return [w for w in re.split(r"[^A-Za-z0-9]+", _fold(text)) if w]
 
 
-def acq_label(series_description: str | None) -> str | None:
+def acq_label(text: str | None) -> str | None:
     """``sag PD fs`` → ``sagPDFs``; ``None`` if nothing usable is left."""
-    words = _words(series_description or "")
+    words = _words(text or "")
     if not words:
         return None
     label = words[0] + "".join(w[:1].upper() + w[1:] for w in words[1:])
     return label[:ACQ_MAX_LENGTH]
+
+
+def naming_text(
+    protocol_name: str | None, series_description: str | None
+) -> tuple[str | None, str | None]:
+    """The text ``acq-`` and the suffix keywords are taken from, and its source keyword.
+
+    ProtocolName first (filled more consistently than SeriesDescription, which may also carry
+    reconstruction suffixes), else SeriesDescription; a value with nothing usable for
+    :func:`acq_label` counts as missing. ``(None, None)`` if neither has anything.
+    """
+    for text, source in (
+        (protocol_name, "ProtocolName"),
+        (series_description, "SeriesDescription"),
+    ):
+        if acq_label(text) is not None:
+            return text, source
+    return None, None
 
 
 @dataclass(frozen=True)
@@ -105,18 +123,18 @@ _KEYWORDS = [
 
 
 def contrast_suffix(
-    series_description: str | None,
+    text: str | None,
     repetition_time: float | None,
     echo_time: float | None,
     inversion_time: float | None,
 ) -> Suffix:
-    """T1w / T2w / PDw / FLAIR from description keywords, else from TR/TE/TI, else ``MR``.
+    """T1w / T2w / PDw / FLAIR from keywords in ``text`` (see :func:`naming_text`), else from
+    TR/TE/TI, else ``MR``.
 
-    Keywords win over parameters. Several contrasts in one description (e.g. "T1 T2 map")
-    are ambiguous and fall through to the parameters.
+    Keywords win over parameters. Several contrasts in one text (e.g. "T1 T2 map") are
+    ambiguous and fall through to the parameters.
     """
-    text = series_description or ""
-    hits = [suffix for suffix, pattern in _KEYWORDS if pattern.search(text)]
+    hits = [suffix for suffix, pattern in _KEYWORDS if pattern.search(text or "")]
     if hits == ["FLAIR", "T2w"] or hits == ["FLAIR", "T1w"]:
         hits = ["FLAIR"]  # "T2 FLAIR" / "T1 FLAIR" are FLAIR images
     if len(hits) == 1:

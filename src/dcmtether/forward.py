@@ -44,6 +44,7 @@ class LabelInput:
     study_time: str | None
     series_number: int | None
     series_description: str | None
+    protocol_name: str | None
     repetition_time: float | None
     echo_time: float | None
     inversion_time: float | None
@@ -65,6 +66,8 @@ class Planned:
     error: str | None = None
     ser: str | None = None
     acq: str | None = None
+    #: Keyword the acq- entity and suffix keywords came from (ProtocolName/SeriesDescription).
+    acq_source: str | None = None
 
     @property
     def datatype(self) -> str:
@@ -97,6 +100,7 @@ def read_label_input(series_id: int, path: Path, diffusion: bool = False) -> Lab
             study_time=str(ds.get("StudyTime", "")) or None,
             series_number=int(series_number) if series_number not in (None, "") else None,
             series_description=str(ds.get("SeriesDescription", "")) or None,
+            protocol_name=str(ds.get("ProtocolName", "")) or None,
             repetition_time=_float(ds, "RepetitionTime"),
             echo_time=_float(ds, "EchoTime"),
             inversion_time=_float(ds, "InversionTime"),
@@ -174,16 +178,19 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
         except naming.LabelError as exc:
             errors[sid] = str(exc)
             continue
+        text, acq_source = naming.naming_text(item.protocol_name, item.series_description)
         suffix = (
             DWI_SUFFIX
             if item.diffusion
             else naming.contrast_suffix(
-                item.series_description, item.repetition_time, item.echo_time, item.inversion_time
+                text, item.repetition_time, item.echo_time, item.inversion_time
             )
         )
-        acq = naming.acq_label(item.series_description)
+        acq = naming.acq_label(text)
         stem = naming.file_stem(subjects[sid], sessions[sid], ser, suffix.value, acq)
-        planned[sid] = Planned(sid, subjects[sid], sessions[sid], stem, suffix, ser=ser, acq=acq)
+        planned[sid] = Planned(
+            sid, subjects[sid], sessions[sid], stem, suffix, ser=ser, acq=acq, acq_source=acq_source
+        )
         stems[stem].append(sid)
     for ids in stems.values():
         if len(ids) > 1:
@@ -362,6 +369,7 @@ def sidecar(
     suffix: naming.Suffix,
     volume_key: tuple[str, ...] = (),
     chunk: int | None = None,
+    acq_source: str | None = None,
 ) -> dict:
     """Readable metadata (keyword: value). Not used for recovery; no patient identifiers.
 
@@ -385,6 +393,8 @@ def sidecar(
             else:
                 per_volume[key] = values
     info: dict = {"Version": __version__, "SuffixRule": suffix.rule}
+    if acq_source is not None:
+        info["AcqSource"] = acq_source
     if chunk is not None:
         info["Chunk"] = chunk
     if volume_key:
@@ -429,7 +439,9 @@ def _convert_part(
         ornt,
         volume.strings,
     )
-    info = sidecar(volume.datasets, volume.indices, plan.suffix, part.volume_key, chunk)
+    info = sidecar(
+        volume.datasets, volume.indices, plan.suffix, part.volume_key, chunk, plan.acq_source
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -487,13 +499,14 @@ volumes are listed in the sidecar under `DcmTether.PerVolume`.
 - `sub-`: first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase).
 - `ses-`: StudyDate `YYYYMMDD`; `THHMM` from StudyTime is appended only when one subject has
   several studies on the same day.
-- `acq-` (custom use): SeriesDescription reduced to letters/digits, camelCase, max 24 chars.
+- `acq-` (custom use): ProtocolName (else SeriesDescription) reduced to letters/digits,
+  camelCase, max 24 chars; the source is recorded in the sidecar under `DcmTether.AcqSource`.
 - `ser-` (custom): SeriesNumber, at least two digits.
 - `chunk-`: one per image plane when a series holds several (e.g. localizers), numbered in
   InstanceNumber order.
-- suffix: `dwi` for diffusion series; else `T1w`, `T2w`, `PDw`, `FLAIR` from description
-  keywords or TR/TE/TI, else `MR`; the rule used is recorded in the sidecar under
-  `DcmTether.SuffixRule`.
+- suffix: `dwi` for diffusion series; else `T1w`, `T2w`, `PDw`, `FLAIR` from keywords in the
+  same text as `acq-`, or from TR/TE/TI, else `MR`; the rule used is recorded in the sidecar
+  under `DcmTether.SuffixRule`.
 """
 
 
