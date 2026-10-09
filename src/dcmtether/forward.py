@@ -7,7 +7,7 @@ PHI-grade) manifest only.
 
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import nibabel as nib
@@ -16,7 +16,7 @@ import pydicom
 from nibabel.openers import ImageOpener
 from nibabel.volumeutils import array_to_file
 
-from dcmtether import __version__, frames, manifest, naming, orientation, tether
+from dcmtether import __version__, diffusion, frames, manifest, naming, orientation, tether
 from dcmtether._quiet import quiet_pydicom
 from dcmtether.scan import Part, Series, Status, classify, read_instances
 
@@ -66,8 +66,12 @@ class Planned:
     error: str | None = None
     ser: str | None = None
     acq: str | None = None
-    #: Keyword the acq- entity and suffix keywords came from (ProtocolName/SeriesDescription).
+    #: Keyword the acq- entity and suffix keywords came from (SeriesDescription/ProtocolName).
     acq_source: str | None = None
+    #: Counter for series that would otherwise share a name (``ser-01_02``).
+    dup: int | None = None
+    #: Non-fatal problem reported with the outcome (value-free, like errors).
+    warning: str | None = None
 
     @property
     def datatype(self) -> str:
@@ -75,7 +79,7 @@ class Planned:
 
     def stem_for(self, chunk: int | None) -> str:
         return naming.file_stem(
-            self.subject, self.session, self.ser, self.suffix.value, self.acq, chunk
+            self.subject, self.session, self.ser, self.suffix.value, self.acq, chunk, self.dup
         )
 
 
@@ -192,11 +196,16 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
             sid, subjects[sid], sessions[sid], stem, suffix, ser=ser, acq=acq, acq_source=acq_source
         )
         stems[stem].append(sid)
+    # Same name (e.g. a repeated SeriesDescription + SeriesNumber): number them in manifest order.
     for ids in stems.values():
         if len(ids) > 1:
-            for sid in ids:
-                errors[sid] = f"file name clash: series {_ids(ids)} map to the same name"
-                planned.pop(sid, None)
+            ids = sorted(ids)
+            warning = (
+                f"duplicate name: series {_ids(ids)} map to the same name, "
+                f"numbered _01.._{len(ids):02d}"
+            )
+            for n, sid in enumerate(ids, start=1):
+                planned[sid] = replace(planned[sid], dup=n, warning=warning)
 
     for sid, error in errors.items():
         planned[sid] = Planned(sid, error=error)
@@ -390,6 +399,27 @@ def _sidecar_value(ds: pydicom.Dataset, keyword: str, scale: float | None):
     return value
 
 
+def _private_diffusion(volumes: list[pydicom.Dataset], per_volume: dict) -> str | None:
+    """Fill b-values/gradients read from vendor private tags into ``per_volume``.
+
+    Returns where they came from (``DcmTether.DiffusionSource``), or ``None`` if the standard
+    elements were used. Gradients not in patient LPS (GE, Philips) are listed unconverted
+    under ``DiffusionGradientVendor`` instead of ``DiffusionGradientOrientation``.
+    """
+    values = [diffusion.diffusion_values(ds) for ds in volumes]
+    sources = {v.source for v in values if v.source is not None}
+    if sources <= {diffusion.STANDARD}:
+        return None
+    gradients = [None if v.gradient is None else list(v.gradient) for v in values]
+    per_volume["DiffusionBValue"] = [v.b_value for v in values]
+    if all(v.gradient_lps for v in values if v.source is not None):
+        per_volume["DiffusionGradientOrientation"] = gradients
+    else:
+        per_volume.pop("DiffusionGradientOrientation", None)
+        per_volume["DiffusionGradientVendor"] = gradients
+    return "; ".join(diffusion.SOURCE_TAGS[s] for s in sorted(sources))
+
+
 def sidecar(
     datasets: list[pydicom.Dataset],
     indices: list[tuple[int, ...]],
@@ -397,6 +427,7 @@ def sidecar(
     volume_key: tuple[str, ...] = (),
     chunk: int | None = None,
     acq_source: str | None = None,
+    dup: int | None = None,
 ) -> dict:
     """Readable metadata (keyword: value). Not used for recovery; no patient identifiers.
 
@@ -411,9 +442,12 @@ def sidecar(
     volumes = [firsts[v] for v in sorted(firsts)]
     out: dict = {}
     per_volume: dict = {}
+    diffusion_source = None
     with quiet_pydicom():
         for keyword in volume_key:
             per_volume[keyword] = [_sidecar_value(ds, keyword, None) for ds in volumes]
+        if "DiffusionBValue" in volume_key:
+            diffusion_source = _private_diffusion(volumes, per_volume)
         for keyword, key, scale in _SIDECAR_KEYWORDS:
             if key in out or key in per_volume:
                 continue  # an earlier keyword already filled it
@@ -428,6 +462,10 @@ def sidecar(
     info: dict = {"Version": __version__, "SuffixRule": suffix.rule}
     if acq_source is not None:
         info["AcqSource"] = acq_source
+    if diffusion_source is not None:
+        info["DiffusionSource"] = diffusion_source
+    if dup is not None:
+        info["Duplicate"] = dup
     if chunk is not None:
         info["Chunk"] = chunk
     if volume_key:
@@ -447,6 +485,8 @@ class Outcome:
     message: str = ""
     #: Number of NIfTI files written (chunks), if converted.
     outputs: int = 0
+    #: Non-fatal problem, e.g. a numbered duplicate name.
+    warning: str | None = None
 
 
 def _convert_part(
@@ -475,7 +515,13 @@ def _convert_part(
         volume.strings,
     )
     info = sidecar(
-        volume.views, volume.indices, plan.suffix, part.volume_key, chunk, plan.acq_source
+        volume.views,
+        volume.indices,
+        plan.suffix,
+        part.volume_key,
+        chunk,
+        plan.acq_source,
+        plan.dup,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -528,16 +574,21 @@ it as is. Research use only.
     logs/dcmtether.jsonl                                 structured log (ids and counts only)
 
 4D series (multi-echo, diffusion, dynamics) are one 4D NIfTI; values that differ between
-volumes are listed in the sidecar under `DcmTether.PerVolume`.
+volumes are listed in the sidecar under `DcmTether.PerVolume`. Diffusion b-values and
+gradients come from the standard DICOM elements, else from vendor private tags (Siemens, GE,
+Philips; named in `DcmTether.DiffusionSource`). GE/Philips gradients are not in patient
+coordinates and are listed unconverted as `DiffusionGradientVendor`.
 
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
 - `sub-`: first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase).
 - `ses-`: StudyDate `YYYYMMDD`; `THHMM` from StudyTime is appended only when one subject has
   several studies on the same day.
-- `acq-` (custom use): ProtocolName (else SeriesDescription) reduced to letters/digits,
+- `acq-` (custom use): SeriesDescription (else ProtocolName) reduced to letters/digits,
   camelCase, max 24 chars; the source is recorded in the sidecar under `DcmTether.AcqSource`.
-- `ser-` (custom): SeriesNumber, at least two digits.
+- `ser-` (custom): SeriesNumber, at least two digits; series that would share a name (e.g.
+  repeated SeriesDescription + SeriesNumber) get a counter `_01`, `_02`, ... after it, in
+  manifest order, recorded in the sidecar under `DcmTether.Duplicate`.
 - `chunk-`: one per image plane when a series holds several (e.g. localizers), numbered in
   InstanceNumber order.
 - suffix: `dwi` for diffusion series; else `T1w`, `T2w`, `PDw`, `FLAIR` from keywords in the
@@ -605,7 +656,7 @@ def convert_dataset(dataset: Path) -> list[Outcome]:
                 )
                 continue
             manifest.record_converted(db, sid, plan.subject, plan.session, outputs)
-            outcomes.append(Outcome(sid, True, outputs=len(outputs)))
+            outcomes.append(Outcome(sid, True, outputs=len(outputs), warning=plan.warning))
         return outcomes
     finally:
         db.close()

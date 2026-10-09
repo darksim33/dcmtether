@@ -125,6 +125,9 @@ def _report_conversion(outcomes: list[Outcome], logger, verbose: bool) -> int:
                 click.echo(
                     f"  series #{outcome.series_id} converted ({plural(outcome.outputs, 'output')})"
                 )
+            if outcome.warning:
+                logger.event("series_warning", series_id=outcome.series_id, reason=outcome.warning)
+                click.echo(f"  series #{outcome.series_id} warning: {outcome.warning}")
         else:
             logger.event("series_failed", series_id=outcome.series_id, reason=outcome.message)
             click.echo(f"  series #{outcome.series_id} failed: {outcome.message}")

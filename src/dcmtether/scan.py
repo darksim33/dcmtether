@@ -42,7 +42,7 @@ from pydicom.uid import (
     RLELossless,
 )
 
-from dcmtether import frames
+from dcmtether import diffusion, frames
 from dcmtether._quiet import quiet_pydicom
 
 #: Enhanced MR: one image per frame, geometry from functional groups (Phase 4c).
@@ -250,6 +250,12 @@ def _floats(ds: pydicom.Dataset, keyword: str, n: int) -> tuple[float, ...] | No
     return values if len(values) == n and all(np.isfinite(values)) else None
 
 
+def _diffusion_fields(view: pydicom.Dataset) -> dict:
+    """Standard diffusion tags, else the vendor's private ones (:mod:`dcmtether.diffusion`)."""
+    values = diffusion.diffusion_values(view)
+    return {"diffusion_b_value": values.b_value, "diffusion_gradient": values.gradient}
+
+
 def plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
@@ -336,8 +342,7 @@ def _read_instances(path: Path) -> list[Instance] | SkippedFile:
             temporal_position=_int(view, "TemporalPositionIdentifier"),
             trigger_time=_float(view, "TriggerTime"),
             acquisition_number=_int(view, "AcquisitionNumber"),
-            diffusion_b_value=_float(view, "DiffusionBValue"),
-            diffusion_gradient=_floats(view, "DiffusionGradientOrientation", 3),
+            **_diffusion_fields(view),
             temporal_position_index=_int(view, "TemporalPositionIndex"),
             effective_echo_time=_float(view, "EffectiveEchoTime"),
             complex_image_component=_str(view, "ComplexImageComponent"),

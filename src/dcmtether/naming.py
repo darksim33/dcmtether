@@ -1,6 +1,6 @@
 """BIDS-inspired file names (PLAN.md §2, "Naming").
 
-    sub-<Family5><Given5>_ses-<YYYYMMDD[THHMM]>[_acq-<desc>]_ser-<NN>_<suffix>
+    sub-<Family5><Given5>_ses-<YYYYMMDD[THHMM]>[_acq-<desc>]_ser-<NN>[_<XX>]_<suffix>
 
 (No body-part entity, by decision of 2026-10-07; BodyPartExamined stays in manifest/sidecar.)
 
@@ -87,13 +87,13 @@ def naming_text(
 ) -> tuple[str | None, str | None]:
     """The text ``acq-`` and the suffix keywords are taken from, and its source keyword.
 
-    ProtocolName first (filled more consistently than SeriesDescription, which may also carry
-    reconstruction suffixes), else SeriesDescription; a value with nothing usable for
-    :func:`acq_label` counts as missing. ``(None, None)`` if neither has anything.
+    SeriesDescription first (the name users see and refer to series by), else ProtocolName; a
+    value with nothing usable for :func:`acq_label` counts as missing. ``(None, None)`` if
+    neither has anything.
     """
     for text, source in (
-        (protocol_name, "ProtocolName"),
         (series_description, "SeriesDescription"),
+        (protocol_name, "ProtocolName"),
     ):
         if acq_label(text) is not None:
             return text, source
@@ -166,11 +166,15 @@ def file_stem(
     suffix: str,
     acq: str | None = None,
     chunk: int | None = None,
+    dup: int | None = None,
 ) -> str:
+    """``dup`` numbers series that would otherwise share a name: ``ser-01_02``."""
     parts = [f"sub-{subject}", f"ses-{session}"]
     if acq:
         parts.append(f"acq-{acq}")
     parts.append(f"ser-{series}")
+    if dup is not None:
+        parts.append(f"{dup:02d}")
     if chunk is not None:
         parts.append(f"chunk-{chunk}")
     parts.append(suffix)
