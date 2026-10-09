@@ -17,18 +17,20 @@ dataset/
 ## File names
 
 BIDS-inspired, not BIDS-compliant:
-`sub-<subject>_ses-<session>[_acq-<acq>]_ser-<NN>[_chunk-<n>]_<suffix>`.
+`sub-<subject>_ses-<session>[_acq-<acq>]_ser-<NN>[_<XX>][_chunk-<n>]_<suffix>`.
 
 | Entity | Content |
 |---|---|
 | `sub-` | first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase) — **identifies the patient** |
 | `ses-` | StudyDate `YYYYMMDD`; `THHMM` from StudyTime only when one subject has several studies that day |
-| `acq-` | ProtocolName (else SeriesDescription) reduced to letters/digits, camelCase, ≤24 chars |
+| `acq-` | SeriesDescription (else ProtocolName) reduced to letters/digits, camelCase, ≤24 chars |
 | `ser-` | SeriesNumber, at least two digits |
+| `_XX` | counter `01`, `02`, … only for series that would otherwise share a name (e.g. same SeriesDescription and SeriesNumber), in manifest order |
 | `chunk-` | one per image plane when a series holds several (e.g. localizers), InstanceNumber order |
 | suffix | `dwi` for diffusion; else `T1w`/`T2w`/`PDw`/`FLAIR` from keywords in the `acq-` text or from TR/TE/TI; else `MR` |
 
-Name clashes are never resolved silently: the affected series fail with a reason.
+Name clashes are never resolved silently: series sharing a file name are numbered and reported
+as a warning; subject and session label clashes make the affected series fail with a reason.
 
 ## NIfTI
 
@@ -59,8 +61,23 @@ never to NIfTI order. Version 2 files are still read.
 
 Readable BIDS-style keys (times in seconds) — not used to rebuild the DICOM, no patient
 identifiers. `DcmTether` holds tool information: `Version`, `SuffixRule`, `AcqSource`
-(ProtocolName/SeriesDescription), `Chunk`, and for 4D series `VolumeKey` (the attribute that
-tells the volumes apart) and `PerVolume` (values that differ between volumes).
+(SeriesDescription/ProtocolName), `Duplicate` (the `_XX` counter), `DiffusionSource`, `Chunk`,
+and for 4D series `VolumeKey` (the attribute that tells the volumes apart) and `PerVolume`
+(values that differ between volumes).
+
+Diffusion b-values and gradients come from `DiffusionBValue (0018,9087)` /
+`DiffusionGradientOrientation (0018,9089)`; when those are missing (older classic exports), from
+the vendor private tags, found by private creator:
+
+| Vendor | b-value | Gradient |
+|---|---|---|
+| Siemens | `SIEMENS MR HEADER` (0019,xx0C) | (0019,xx0E), patient LPS |
+| GE | `GEMS_PARM_01` (0043,xx39) first value, 10⁹ offset removed | `GEMS_ACQU_01` (0019,xxBB–xxBD), scanner frame |
+| Philips | `Philips Imaging DD 001` (2001,xx03) | `Philips MR Imaging DD 001` (2005,xxB0–xxB2), RL/AP/FH |
+
+`DiffusionSource` then names the tags. GE and Philips gradients are not in patient LPS and are
+listed unconverted under `PerVolume.DiffusionGradientVendor` instead of
+`DiffusionGradientOrientation`. GE values are used only when the gradient tags are present too.
 
 ## Manifest (`manifest.sqlite`, schema 3)
 
