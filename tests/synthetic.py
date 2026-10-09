@@ -256,11 +256,52 @@ def make_localizer(seed: int = 0) -> SyntheticSeries:
 
 
 #: Volume kinds for :func:`make_4d`: which attributes tell the volumes apart.
-VOLUME_KINDS = ("echo", "dynamic", "diffusion", "none")
+VOLUME_KINDS = (
+    "echo",
+    "dynamic",
+    "diffusion",
+    "diffusion_siemens",
+    "diffusion_ge",
+    "diffusion_philips",
+    "none",
+)
+
+_GRADIENTS = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.6, 0.8, 0.0)]
+
+
+def _private_diffusion(ds: Dataset, vendor: str, v: int) -> None:
+    """b-value/gradient only in the vendor's private tags (older classic exports)."""
+    b_value = 0 if v == 0 else 1000
+    gradient = (0.0, 0.0, 0.0) if v == 0 else _GRADIENTS[(v - 1) % 4]
+    if vendor == "siemens":
+        ds.Manufacturer = "SIEMENS"
+        block = ds.private_block(0x0019, "SIEMENS MR HEADER", create=True)
+        block.add_new(0x0C, "IS", b_value)
+        if v:
+            block.add_new(0x0E, "FD", list(gradient))
+    elif vendor == "ge":
+        ds.Manufacturer = "GE MEDICAL SYSTEMS"
+        parm = ds.private_block(0x0043, "GEMS_PARM_01", create=True)
+        parm.add_new(0x39, "IS", [1_000_000_000 + b_value, 0, 0, 0])
+        acqu = ds.private_block(0x0019, "GEMS_ACQU_01", create=True)
+        for offset, value in zip((0xBB, 0xBC, 0xBD), gradient, strict=True):
+            acqu.add_new(offset, "DS", value)
+    elif vendor == "philips":
+        ds.Manufacturer = "Philips Medical Systems"
+        ds.private_block(0x2001, "Philips Imaging DD 001", create=True).add_new(
+            0x03, "FL", float(b_value)
+        )
+        block = ds.private_block(0x2005, "Philips MR Imaging DD 001", create=True)
+        for offset, value in zip((0xB0, 0xB1, 0xB2), gradient, strict=True):
+            block.add_new(offset, "FL", value)
+    else:
+        raise ValueError(f"unknown vendor: {vendor}")
 
 
 def _volume_attributes(ds: Dataset, kind: str, v: int) -> None:
-    if kind == "echo":
+    if kind.startswith("diffusion_"):
+        _private_diffusion(ds, kind.removeprefix("diffusion_"), v)
+    elif kind == "echo":
         ds.EchoNumbers = v + 1
         ds.EchoTime = DS(15 * (v + 1))
     elif kind == "dynamic":
@@ -269,9 +310,8 @@ def _volume_attributes(ds: Dataset, kind: str, v: int) -> None:
     elif kind == "diffusion":
         ds.add_new(0x00189087, "FD", 0.0 if v == 0 else 1000.0)  # DiffusionBValue
         if v:  # b0 has no gradient direction
-            gradients = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.6, 0.8, 0.0)]
             ds.add_new(
-                0x00189089, "FD", list(gradients[(v - 1) % 4])
+                0x00189089, "FD", list(_GRADIENTS[(v - 1) % 4])
             )  # DiffusionGradientOrientation
     elif kind != "none":
         raise ValueError(f"unknown volume kind: {kind}")

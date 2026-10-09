@@ -167,6 +167,30 @@ def test_diffusion_goes_to_dwi(tmp_path):
     per_volume = sidecar["DcmTether"]["PerVolume"]
     assert per_volume["DiffusionBValue"] == [0.0, 1000.0, 1000.0]
     assert per_volume["DiffusionGradientOrientation"] == [None, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    assert "DiffusionSource" not in sidecar["DcmTether"]
+
+
+@pytest.mark.parametrize(
+    ("vendor", "gradient_key", "b0_gradient"),
+    [
+        ("siemens", "DiffusionGradientOrientation", None),
+        ("ge", "DiffusionGradientVendor", [0.0, 0.0, 0.0]),
+        ("philips", "DiffusionGradientVendor", [0.0, 0.0, 0.0]),
+    ],
+)
+def test_private_tag_diffusion_goes_to_dwi(tmp_path, vendor, gradient_key, b0_gradient):
+    dataset = _dataset(tmp_path, make_4d(n_volumes=3, kind=f"diffusion_{vendor}"))
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    nifti = _single_output(dataset)
+    assert nifti.name == "sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_dwi.nii.gz"
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    info = sidecar["DcmTether"]
+    assert info["DiffusionSource"].lower().startswith(vendor)
+    per_volume = info["PerVolume"]
+    assert per_volume["DiffusionBValue"] == [0.0, 1000.0, 1000.0]
+    assert per_volume[gradient_key] == [b0_gradient, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    other = {"DiffusionGradientOrientation", "DiffusionGradientVendor"} - {gradient_key}
+    assert not other & per_volume.keys()
 
 
 @pytest.mark.parametrize("make", [make_localizer, make_two_planes], ids=["localizer", "two-planes"])
@@ -361,7 +385,7 @@ def _patient(seed, name, pid, date="20260101", time="120000", study=None, number
     return s
 
 
-# --- acq- source: ProtocolName, else SeriesDescription -----------------------------------------
+# --- acq- source: SeriesDescription, else ProtocolName -----------------------------------------
 
 
 def _named_series(protocol: str | None, description: str) -> SyntheticSeries:
@@ -377,24 +401,24 @@ def _converted_stem_and_sidecar(tmp_path, series) -> tuple[str, dict]:
     return Path(row["nifti_path"]).name.removesuffix(".nii.gz"), sidecar
 
 
-def test_acq_uses_protocol_name(tmp_path):
+def test_acq_uses_series_description(tmp_path):
     stem, sidecar = _converted_stem_and_sidecar(
-        tmp_path, _named_series("sag PD fs", "sag PD fs_ND")
+        tmp_path, _named_series("t1 something", "sag PD fs")
     )
     assert stem == "sub-SynthPhant_ses-20260101_acq-sagPDFs_ser-01_PDw"
-    assert sidecar["DcmTether"]["AcqSource"] == "ProtocolName"
+    assert sidecar["DcmTether"]["AcqSource"] == "SeriesDescription"
     assert sidecar["DcmTether"]["SuffixRule"] == "keyword:pdw"
 
 
-def test_suffix_keywords_come_from_the_protocol_name(tmp_path):
-    stem, _ = _converted_stem_and_sidecar(tmp_path, _named_series("t2_tse", "t1 something"))
+def test_suffix_keywords_come_from_the_series_description(tmp_path):
+    stem, _ = _converted_stem_and_sidecar(tmp_path, _named_series("t1 something", "t2_tse"))
     assert stem.endswith("_acq-t2Tse_ser-01_T2w")
 
 
-def test_acq_falls_back_to_series_description(tmp_path):
-    stem, sidecar = _converted_stem_and_sidecar(tmp_path, make_series())
-    assert stem == DEFAULT_STEM
-    assert sidecar["DcmTether"]["AcqSource"] == "SeriesDescription"
+def test_acq_falls_back_to_protocol_name(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series("sag PD fs", ""))
+    assert stem == "sub-SynthPhant_ses-20260101_acq-sagPDFs_ser-01_PDw"
+    assert sidecar["DcmTether"]["AcqSource"] == "ProtocolName"
 
 
 def test_no_acq_without_protocol_and_description(tmp_path):
@@ -436,11 +460,26 @@ def test_same_day_same_time_studies_clash(tmp_path):
     ] * 2
 
 
-def test_repeated_series_number_in_one_study_clashes(tmp_path):
+def test_repeated_description_and_series_number_are_numbered(tmp_path):
     a = _patient(1, "DOE^JANE", "P1", study="2.25.11", desc="t1 a")
     b = _patient(2, "DOE^JANE", "P1", study="2.25.11", desc="t1 a")
-    outcomes = convert_dataset(_dataset(tmp_path, a, b))
-    assert all(o.message.startswith("file name clash: series #1, #2") for o in outcomes)
+    dataset = _dataset(tmp_path, a, b)
+    outcomes = convert_dataset(dataset)
+    assert all(o.ok for o in outcomes)
+    assert [o.warning for o in outcomes] == [
+        "duplicate name: series #1, #2 map to the same name, numbered _01.._02"
+    ] * 2
+    rows = sorted(output_rows(dataset), key=lambda r: r["nifti_path"])
+    stems = [Path(r["nifti_path"]).name.removesuffix(".nii.gz") for r in rows]
+    assert stems == [
+        "sub-DoeJane_ses-20260101_acq-t1A_ser-01_01_T1w",
+        "sub-DoeJane_ses-20260101_acq-t1A_ser-01_02_T1w",
+    ]
+    for n, row in enumerate(rows, start=1):
+        sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
+        assert sidecar["DcmTether"]["Duplicate"] == n
+    # A re-run skips both and keeps the numbering.
+    assert convert_dataset(dataset) == []
 
 
 def test_missing_patient_name_fails_cleanly(tmp_path):
@@ -462,6 +501,18 @@ def test_cli_to_nii(tmp_path):
     assert "subject label clash" in result.output
     for secret in ("MUELLER", "Muell", "SMITH", "Smith", "2026", "P1", "2.25."):
         assert secret not in result.output
+
+
+def test_cli_to_nii_reports_duplicate_names_as_warning(tmp_path):
+    a = _patient(1, "DOE^JANE", "P1", study="2.25.11")
+    b = _patient(2, "DOE^JANE", "P1", study="2.25.11")
+    dataset = _dataset(tmp_path, a, b)
+    result = CliRunner().invoke(main, ["to-nii", str(dataset)])
+    assert result.exit_code == 0
+    assert "Converted 2 series, 0 failed." in result.output
+    assert "series #1 warning: duplicate name: series #1, #2" in result.output
+    log = (dataset / "logs" / "dcmtether.jsonl").read_text("utf-8")
+    assert '"series_warning"' in log
 
 
 def test_cli_to_nii_without_manifest(tmp_path):

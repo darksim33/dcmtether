@@ -163,7 +163,9 @@ def test_cli_to_dcm_reports_the_transfer_syntax_change(tmp_path):
 # --- enhanced multi-frame ----------------------------------------------------------------------
 
 
-ENHANCED_CASES = [(None, 1)] + [(kind, n) for kind in KINDS for n in (1, 3)]  # 4D: 3 volumes
+# 4D: 3 volumes. Private-tag diffusion is a classic-export fallback; enhanced uses the standard.
+ENHANCED_KINDS = [k for k in KINDS if not k.startswith("diffusion_")]
+ENHANCED_CASES = [(None, 1)] + [(kind, n) for kind in ENHANCED_KINDS for n in (1, 3)]
 
 
 @pytest.mark.parametrize(("kind", "n_files"), ENHANCED_CASES)

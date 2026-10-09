@@ -61,17 +61,17 @@ def test_acq_label(description, label):
 @pytest.mark.parametrize(
     ("protocol", "description", "expected"),
     [
-        ("sag PD fs", "sag PD fs_ND", ("sag PD fs", "ProtocolName")),
-        ("sag PD fs", None, ("sag PD fs", "ProtocolName")),
-        ("", "t1 axial", ("t1 axial", "SeriesDescription")),
-        ("   ", "t1 axial", ("t1 axial", "SeriesDescription")),
-        ("***", "t1 axial", ("t1 axial", "SeriesDescription")),  # nothing usable
+        ("sag PD fs", "sag PD fs_ND", ("sag PD fs_ND", "SeriesDescription")),
         (None, "t1 axial", ("t1 axial", "SeriesDescription")),
-        (None, "  ", (None, None)),
+        ("sag PD fs", None, ("sag PD fs", "ProtocolName")),
+        ("sag PD fs", "", ("sag PD fs", "ProtocolName")),
+        ("sag PD fs", "   ", ("sag PD fs", "ProtocolName")),
+        ("sag PD fs", "***", ("sag PD fs", "ProtocolName")),  # nothing usable
+        ("  ", None, (None, None)),
         (None, None, (None, None)),
     ],
 )
-def test_naming_text_prefers_protocol_name(protocol, description, expected):
+def test_naming_text_prefers_series_description(protocol, description, expected):
     assert naming.naming_text(protocol, description) == expected
 
 
@@ -123,6 +123,14 @@ def test_file_stem():
         == "sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw"
     )
     assert naming.file_stem("Doe", "20260314", "12", "MR") == "sub-Doe_ses-20260314_ser-12_MR"
+    assert (
+        naming.file_stem("Doe", "20260314", "01", "T1w", dup=2)
+        == "sub-Doe_ses-20260314_ser-01_02_T1w"
+    )
+    assert (
+        naming.file_stem("Doe", "20260314", "01", "MR", chunk=1, dup=2)
+        == "sub-Doe_ses-20260314_ser-01_02_chunk-1_MR"
+    )
     assert naming.series_label(5) == "05"
     assert naming.series_label(123) == "123"
     with pytest.raises(LabelError):

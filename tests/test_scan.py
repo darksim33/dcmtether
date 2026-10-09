@@ -199,6 +199,10 @@ VOLUME_KEYS = {
     "echo": ["EchoNumbers"],
     "dynamic": ["TemporalPositionIdentifier"],
     "diffusion": ["DiffusionBValue", "DiffusionGradientOrientation"],
+    # b-values only in vendor private tags (older classic exports)
+    "diffusion_siemens": ["DiffusionBValue", "DiffusionGradientOrientation"],
+    "diffusion_ge": ["DiffusionBValue", "DiffusionGradientOrientation"],
+    "diffusion_philips": ["DiffusionBValue", "DiffusionGradientOrientation"],
 }
 
 
