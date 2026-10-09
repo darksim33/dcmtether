@@ -44,6 +44,7 @@ from pydicom.uid import (
 
 from dcmtether import diffusion, frames
 from dcmtether._quiet import quiet_pydicom
+from dcmtether.progress import Progress, no_progress
 
 #: Enhanced MR: one image per frame, geometry from functional groups (Phase 4c).
 MULTI_FRAME_SOP_CLASSES = frozenset({EnhancedMRImageStorage})
@@ -705,13 +706,14 @@ def _walk(root: Path, exclude: Path | None) -> list[Path]:
     return files
 
 
-def scan(root: Path, exclude: Path | None = None) -> ScanResult:
+def scan(root: Path, exclude: Path | None = None, progress: Progress = no_progress) -> ScanResult:
     """Scan ``root`` recursively; ``exclude`` (e.g. the output dataset) is skipped."""
     root = root.resolve()
     exclude = exclude.resolve() if exclude is not None else None
     by_series: dict[str, list[Instance]] = defaultdict(list)
     skipped: list[SkippedFile] = []
-    for path in _walk(root, exclude):
+    paths = _walk(root, exclude)
+    for path in progress(paths, total=len(paths), desc="Reading headers", unit="file"):
         result = read_instances(path)
         if isinstance(result, SkippedFile):
             skipped.append(result)
@@ -719,7 +721,9 @@ def scan(root: Path, exclude: Path | None = None) -> ScanResult:
             by_series[result[0].series_instance_uid].extend(result)
 
     series = []
-    for uid, instances in by_series.items():
+    for uid, instances in progress(
+        by_series.items(), total=len(by_series), desc="Classifying", unit="series"
+    ):
         s = Series(uid, sorted(instances, key=lambda i: (i.path, i.frame or 0)))
         classify(s)
         series.append(s)

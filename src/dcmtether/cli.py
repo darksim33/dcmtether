@@ -5,12 +5,14 @@ Commands that work on a dataset append structured records to ``DATASET/logs/dcmt
 (:mod:`dcmtether.log`).
 """
 
+import sys
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 import click
+from tqdm import tqdm
 
 from dcmtether import __version__
 from dcmtether.compare import compare_series, dicom_files
@@ -42,6 +44,12 @@ _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
 _output_dir = click.Path(file_okay=False, path_type=Path)
 _verbose = click.option("--verbose", "-v", is_flag=True, help="Also list every series.")
+
+
+def _progress(iterable: Iterable, **kwargs) -> Iterable:
+    """Progress bar on stderr, only on a terminal (``TQDM_DISABLE=1`` turns it off); it is
+    removed when done, so the summary on stdout reads as without it."""
+    return tqdm(iterable, file=sys.stderr, leave=False, disable=None, dynamic_ncols=True, **kwargs)
 
 
 @contextmanager
@@ -146,7 +154,7 @@ def scan(source: Path, dataset: Path) -> None:
     target = manifest_path(dataset)
     if target.exists():
         raise click.ClickException(f"manifest already exists: {target}")
-    result = scan_directory(source, exclude=dataset)
+    result = scan_directory(source, exclude=dataset, progress=_progress)
     write_manifest(dataset, result)
     with _logged(dataset, "scan") as logger:
         _log_scanned(logger, result)
@@ -167,7 +175,7 @@ def to_nii(dataset: Path, verbose: bool) -> None:
     has_manifest = manifest_path(dataset).exists()
     with _logged(dataset if has_manifest else None, "to-nii") as logger:
         try:
-            outcomes = convert_dataset(dataset)
+            outcomes = convert_dataset(dataset, progress=_progress)
         except ManifestError as exc:
             raise click.ClickException(str(exc)) from None
         failed = _report_conversion(outcomes, logger, verbose)
@@ -187,7 +195,7 @@ def run(source: Path, dataset: Path, verbose: bool) -> None:
     their source files changed, that is reported).
     """
     first_run = not manifest_path(dataset).exists()
-    result = scan_directory(source, exclude=dataset)
+    result = scan_directory(source, exclude=dataset, progress=_progress)
     if first_run:
         write_manifest(dataset, result)
     with _logged(dataset, "run") as logger:
@@ -224,7 +232,7 @@ def run(source: Path, dataset: Path, verbose: bool) -> None:
             )
         for series_id in missing:
             click.echo(f"  series #{series_id}: no longer found in SOURCE (kept in the manifest)")
-        failed = _report_conversion(convert_dataset(dataset), logger, verbose)
+        failed = _report_conversion(convert_dataset(dataset, progress=_progress), logger, verbose)
     if failed:
         raise click.exceptions.Exit(1)
 

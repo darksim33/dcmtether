@@ -18,6 +18,7 @@ from nibabel.volumeutils import array_to_file
 
 from dcmtether import __version__, diffusion, frames, manifest, naming, orientation, tether
 from dcmtether._quiet import quiet_pydicom
+from dcmtether.progress import Progress, no_progress
 from dcmtether.scan import Part, Series, Status, classify, read_instances
 
 DATATYPE_DIR = "anat"
@@ -611,7 +612,7 @@ def _is_diffusion(geometry_json: str) -> bool:
     return any("DiffusionBValue" in key for key in keys)
 
 
-def convert_dataset(dataset: Path) -> list[Outcome]:
+def convert_dataset(dataset: Path, progress: Progress = no_progress) -> list[Outcome]:
     """Convert every supported or split, not yet converted series in the dataset's manifest."""
     db = manifest.open_manifest(dataset)
     _write_readme(dataset)
@@ -633,10 +634,9 @@ def convert_dataset(dataset: Path) -> list[Outcome]:
                 )
         plans = plan_labels(inputs)
 
-        for row in rows:
+        todo = [r for r in rows if r["id"] in plans and r["conversion_status"] != "converted"]
+        for row in progress(todo, total=len(todo), desc="Converting", unit="series"):
             sid = row["id"]
-            if sid not in plans or row["conversion_status"] == "converted":
-                continue
             plan = plans[sid]
             if plan.error:
                 manifest.record_failed(db, sid, plan.error)
