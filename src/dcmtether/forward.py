@@ -51,6 +51,8 @@ class LabelInput:
     inversion_time: float | None
     #: The scan found diffusion volumes (from the manifest geometry, not the header).
     diffusion: bool = False
+    #: Subject label the series was converted under (manifest), if converted already.
+    converted_subject: str | None = None
 
 
 DWI_SUFFIX = naming.Suffix("dwi", "diffusion volumes")
@@ -92,7 +94,9 @@ def _float(ds: pydicom.Dataset, keyword: str) -> float | None:
         return None
 
 
-def read_label_input(series_id: int, path: Path, diffusion: bool = False) -> LabelInput:
+def read_label_input(
+    series_id: int, path: Path, diffusion: bool = False, converted_subject: str | None = None
+) -> LabelInput:
     with quiet_pydicom():
         ds = pydicom.dcmread(path, stop_before_pixels=True)
         series_number = ds.get("SeriesNumber")
@@ -110,11 +114,54 @@ def read_label_input(series_id: int, path: Path, diffusion: bool = False) -> Lab
             echo_time=_float(ds, "EchoTime"),
             inversion_time=_float(ds, "InversionTime"),
             diffusion=diffusion,
+            converted_subject=converted_subject,
         )
 
 
 def _ids(series_ids) -> str:
     return ", ".join(f"#{i}" for i in sorted(series_ids))
+
+
+def _number_subjects(inputs: list[LabelInput], subjects: dict[int, str]) -> dict[int, str]:
+    """Different PatientIDs with the same subject label (e.g. phantoms, study codes as names):
+    numbered ``<label>01``, ``<label>02``, ... in manifest order of each patient's first series.
+
+    Stable across runs: manifest ids never change, and a patient already converted keeps the
+    label it was converted under (its number is then not reused). Returns a warning per
+    affected series. Labels are letters only, so the appended digits cannot create a clash.
+    """
+    by_label: dict[str, dict] = defaultdict(dict)  # label -> PatientID -> [LabelInput]
+    for item in inputs:
+        if item.series_id in subjects:
+            by_label[subjects[item.series_id]].setdefault(item.patient_id, []).append(item)
+    warnings: dict[int, str] = {}
+    for label, patients in by_label.items():
+        order = sorted(patients.values(), key=lambda items: min(i.series_id for i in items))
+        kept = [
+            next((i.converted_subject for i in items if i.converted_subject), None)
+            for items in order
+        ]
+        if len(order) == 1 and kept[0] is None:
+            continue
+        used = {k for k in kept if k is not None}
+        numbered: dict[int, str] = {}
+        for n, (items, new) in enumerate(zip(order, kept, strict=True), start=1):
+            if new is None:
+                new = f"{label}{n:02d}"
+                while new in used:  # taken by a patient converted earlier
+                    n += 1
+                    new = f"{label}{n:02d}"
+                used.add(new)
+            for item in items:
+                numbered[item.series_id] = new
+        subjects.update(numbered)
+        if len(order) > 1:
+            warning = (
+                f"subject label clash: {len(order)} different PatientIDs give the same label "
+                f"(series {_ids(numbered)}), numbered to keep them apart"
+            )
+            warnings.update(dict.fromkeys(numbered, warning))
+    return warnings
 
 
 def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
@@ -127,21 +174,10 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
         except naming.LabelError as exc:
             errors[item.series_id] = str(exc)
 
-    # Different patients (PatientID) must never share a subject label.
-    patients_by_label: dict[str, set] = defaultdict(set)
-    series_by_label: dict[str, list[int]] = defaultdict(list)
-    for item in inputs:
-        if item.series_id in subjects:
-            patients_by_label[subjects[item.series_id]].add(item.patient_id)
-            series_by_label[subjects[item.series_id]].append(item.series_id)
-    for label, patients in patients_by_label.items():
-        if len(patients) > 1:
-            ids = series_by_label[label]
-            for sid in ids:
-                errors[sid] = (
-                    f"subject label clash: {len(patients)} different PatientIDs give the same "
-                    f"label (series {_ids(ids)})"
-                )
+    # Different patients (PatientID) must never share a subject label: number them.
+    warnings: dict[int, list[str]] = defaultdict(list)
+    for sid, warning in _number_subjects(inputs, subjects).items():
+        warnings[sid].append(warning)
 
     # Sessions: the date, plus StudyTime only when one subject has several studies that day.
     studies_per_day: dict[tuple[str, str], set] = defaultdict(set)
@@ -206,8 +242,12 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
                 f"numbered _01.._{len(ids):02d}"
             )
             for n, sid in enumerate(ids, start=1):
-                planned[sid] = replace(planned[sid], dup=n, warning=warning)
+                planned[sid] = replace(planned[sid], dup=n)
+                warnings[sid].append(warning)
 
+    for sid, messages in warnings.items():
+        if sid in planned:
+            planned[sid] = replace(planned[sid], warning="; ".join(messages))
     for sid, error in errors.items():
         planned[sid] = Planned(sid, error=error)
     return planned
@@ -583,6 +623,8 @@ coordinates and are listed unconverted as `DiffusionGradientVendor`.
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
 - `sub-`: first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase).
+  Different PatientIDs with the same label (e.g. phantoms, study codes as names) are numbered
+  `01`, `02`, ... in manifest order (`sub-PhantQa01`); a converted patient keeps its label.
 - `ses-`: StudyDate `YYYYMMDD`; `THHMM` from StudyTime is appended only when one subject has
   several studies on the same day.
 - `acq-` (custom use): SeriesDescription (else ProtocolName) reduced to letters/digits,
@@ -619,14 +661,17 @@ def convert_dataset(dataset: Path, progress: Progress = no_progress) -> list[Out
     try:
         root = manifest.source_root(db)
         rows = db.execute(
-            "SELECT id, source_dir, conversion_status, geometry FROM series "
+            "SELECT id, source_dir, conversion_status, geometry, subject FROM series "
             "WHERE status IN ('supported', 'split') ORDER BY id"
         ).fetchall()
         inputs, outcomes = [], []
         for row in rows:
             first = root / manifest.instance_paths(db, row["id"])[0]
+            converted = row["subject"] if row["conversion_status"] == "converted" else None
             try:
-                inputs.append(read_label_input(row["id"], first, _is_diffusion(row["geometry"])))
+                inputs.append(
+                    read_label_input(row["id"], first, _is_diffusion(row["geometry"]), converted)
+                )
             except Exception as exc:
                 manifest.record_failed(db, row["id"], f"cannot read header: {exc!r}")
                 outcomes.append(
