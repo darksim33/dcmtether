@@ -313,9 +313,24 @@ Outcome and decisions:
   subject, no manifest/source paths. The original dataset stays untouched; an anonymized export
   is by definition no longer element-identical to the source DICOM. Related: open question on
   anonymized *inputs* (§7).
-- From earlier phases: InstanceNumber order as last-resort volume key (GE fMRI, §7), vendor
-  private diffusion keys + `.bval`/`.bvec`, Siemens mosaic, derivatives of 4D sources, arbitrary
-  derivative grids.
+- **More datatype folders and suffixes** (added 2026-10-09). Today there are only `anat/` and
+  `dwi/` (`forward.py`: `DATATYPE_DIR`, `DWI_DIR`); everything that isn't diffusion lands in
+  `anat/` labelled `T1w`/`T2w`/`PDw`/`FLAIR` by keyword or TR/TE, else `MR`. Candidates, following
+  BIDS naming where it fits:
+  - `func/` (fMRI, `bold`), `fmap/` (field maps: `magnitude`/`phasediff`/`epi`), `perf/` (ASL).
+  - QSM/SWI: multi-echo GRE as `MEGRE` with `part-mag`/`part-phase` (from `ImageType` `M`/`P`,
+    `MAGNITUDE`/`PHASE`, or `ComplexImageComponent`) instead of the current `T1w` by TR/TE;
+    scanner-reconstructed maps as `Chimap`/`swi`. Decide whether QSM gets its own folder or stays
+    in `anat/` as in BIDS.
+  - Derived scanner maps (ADC, trace, FA) recognised from `ImageType` and labelled instead of
+    `MR`/`T2w`.
+  - Detection from `ImageType`, volume key (e.g. `TemporalPositionIdentifier` + EPI for `func`),
+    sequence/vendor tags and SeriesDescription keywords; the chosen rule recorded in the sidecar
+    like `SuffixRule`.
+- From earlier phases: InstanceNumber order as last-resort volume key (GE fMRI, §7),
+  `.bval`/`.bvec` with gradients rotated into the NIfTI frame (vendor private diffusion keys done
+  2026-10-09; GE/Philips gradients still unconverted), Siemens mosaic, derivatives of 4D sources,
+  arbitrary derivative grids.
 
 ---
 
