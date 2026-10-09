@@ -25,7 +25,7 @@ from synthetic import (
 from dcmtether import orientation
 from dcmtether.cli import main
 from dcmtether.forward import convert_dataset
-from dcmtether.manifest import write_manifest
+from dcmtether.manifest import update_manifest, write_manifest
 from dcmtether.scan import scan
 
 # Synthetic defaults: PatientName "Synthetic^Phantom", StudyDate 20260101, description
@@ -427,18 +427,47 @@ def test_no_acq_without_protocol_and_description(tmp_path):
     assert "AcqSource" not in sidecar["DcmTether"]
 
 
-def test_subject_label_clash_fails_both_without_naming_them(tmp_path):
+def _subjects(dataset: Path) -> dict[int, str]:
+    return {r["id"]: r["subject"] for r in _manifest_rows(dataset)}
+
+
+def test_subject_label_clash_is_numbered_without_naming_them(tmp_path):
     a = _patient(1, "MUELLER^THOMAS", "P1")
     b = _patient(2, "MUELLERS^THOMASINA", "P2")
     c = _patient(3, "SMITH^ANNA", "P3")
     dataset = _dataset(tmp_path, a, b, c)
     outcomes = {o.series_id: o for o in convert_dataset(dataset)}
-    failed = [o for o in outcomes.values() if not o.ok]
-    assert len(failed) == 2
-    for o in failed:
-        assert o.message.startswith("subject label clash: 2 different PatientIDs")
-        assert "Muell" not in o.message and "MUELLER" not in o.message
-    assert sum(o.ok for o in outcomes.values()) == 1
+    assert all(o.ok for o in outcomes.values())
+    assert _subjects(dataset) == {1: "MuellThoma01", 2: "MuellThoma02", 3: "SmithAnna"}
+    for sid in (1, 2):
+        warning = outcomes[sid].warning
+        assert warning.startswith("subject label clash: 2 different PatientIDs")
+        assert "series #1, #2" in warning
+        assert "Muell" not in warning and "MUELLER" not in warning
+    assert outcomes[3].warning is None
+
+
+def test_subject_numbers_follow_the_first_series_of_each_patient(tmp_path):
+    a1 = _patient(1, "PHANTOM^QA", "QA-2")
+    b = _patient(2, "PHANTOM^QA", "QA-1")
+    a2 = _patient(3, "PHANTOM^QA", "QA-2", date="20260202", number=2)
+    dataset = _dataset(tmp_path, a1, b, a2)
+    assert all(o.ok for o in convert_dataset(dataset))
+    assert _subjects(dataset) == {1: "PhantQa01", 2: "PhantQa02", 3: "PhantQa01"}
+
+
+def test_converted_patient_keeps_its_subject_label(tmp_path):
+    write_series(_patient(1, "PHANTOM^QA", "QA-1"), tmp_path / "src" / "s0")
+    dataset = tmp_path / "dataset"
+    write_manifest(dataset, scan(tmp_path / "src"))
+    assert all(o.ok for o in convert_dataset(dataset))
+    # A second phantom (other PatientID) and a new session of the first one arrive later.
+    write_series(_patient(2, "PHANTOM^QA", "QA-2"), tmp_path / "src" / "s1")
+    write_series(_patient(3, "PHANTOM^QA", "QA-1", date="20260202"), tmp_path / "src" / "s2")
+    update_manifest(dataset, scan(tmp_path / "src"))
+    outcomes = convert_dataset(dataset)
+    assert all(o.ok for o in outcomes)
+    assert _subjects(dataset) == {1: "PhantQa", 2: "PhantQa02", 3: "PhantQa"}
 
 
 def test_same_patient_two_studies_same_day_get_time_suffix(tmp_path):
@@ -491,14 +520,16 @@ def test_missing_patient_name_fails_cleanly(tmp_path):
 
 
 def test_cli_to_nii(tmp_path):
-    a = _patient(1, "MUELLER^THOMAS", "P1")
-    b = _patient(2, "MUELLERS^THOMASINA", "P2")
-    ok = _patient(3, "SMITH^ANNA", "P3")
-    dataset = _dataset(tmp_path, a, b, ok)
+    a = _patient(1, "MUELLER^THOMAS", "P1", study="2.25.11")
+    b = _patient(2, "MUELLER^THOMAS", "P1", study="2.25.12", number=2)  # same date and time
+    c = _patient(3, "MUELLERS^THOMASINA", "P2")
+    ok = _patient(4, "SMITH^ANNA", "P3")
+    dataset = _dataset(tmp_path, a, b, c, ok)
     result = CliRunner().invoke(main, ["to-nii", str(dataset)])
     assert result.exit_code == 1
-    assert "Converted 1 series, 2 failed." in result.output
-    assert "subject label clash" in result.output
+    assert "Converted 2 series, 2 failed." in result.output
+    assert "session label clash" in result.output
+    assert "warning: subject label clash" in result.output
     for secret in ("MUELLER", "Muell", "SMITH", "Smith", "2026", "P1", "2.25."):
         assert secret not in result.output
 
