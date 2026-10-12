@@ -15,6 +15,7 @@ descriptions or paths) so they are safe to print and to include in failure repor
 """
 
 import os
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -695,19 +696,32 @@ def classify(series: Series) -> None:
 # --- scanning --------------------------------------------------------------------------------
 
 
+#: What a dataset writes at its top level (manifest, README, logs/, sub-*/), skipped when the
+#: dataset lies inside the scanned folder itself (``run`` without ``--output``).
+_DATASET_FILES = re.compile(r"manifest\.sqlite(-journal|-wal|-shm)?|README\.md")
+_DATASET_DIRS = re.compile(r"logs|sub-.*")
+
+
 def _walk(root: Path, exclude: Path | None) -> list[Path]:
     files = []
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         if exclude is not None:
             dirnames[:] = [d for d in dirnames if (here / d).resolve() != exclude]
+            if here.resolve() == exclude:
+                dirnames[:] = [d for d in dirnames if not _DATASET_DIRS.fullmatch(d)]
+                filenames = [f for f in filenames if not _DATASET_FILES.fullmatch(f)]
         dirnames.sort()
         files.extend(here / name for name in sorted(filenames))
     return files
 
 
 def scan(root: Path, exclude: Path | None = None, progress: Progress = no_progress) -> ScanResult:
-    """Scan ``root`` recursively; ``exclude`` (e.g. the output dataset) is skipped."""
+    """Scan ``root`` recursively; ``exclude`` (e.g. the output dataset) is skipped.
+
+    If ``exclude`` is ``root`` itself (dataset written into the source folder), only the
+    dataset's own top-level entries are skipped.
+    """
     root = root.resolve()
     exclude = exclude.resolve() if exclude is not None else None
     by_series: dict[str, list[Instance]] = defaultdict(list)

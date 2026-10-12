@@ -185,15 +185,24 @@ def to_nii(dataset: Path, verbose: bool) -> None:
 
 @main.command()
 @click.argument("source", type=_existing_dir)
-@click.argument("dataset", type=_output_dir)
+@click.option(
+    "--output",
+    "-o",
+    "dataset",
+    type=_output_dir,
+    help="Dataset directory (default: SOURCE itself).",
+)
 @_verbose
-def run(source: Path, dataset: Path, verbose: bool) -> None:
-    """Scan SOURCE and convert it into DATASET; safe to run again.
+def run(source: Path, dataset: Path | None, verbose: bool) -> None:
+    """Scan SOURCE and convert it into a dataset; safe to run again.
 
-    The first run creates the dataset. Later runs (same SOURCE) add new series, rescan series
-    that are not converted yet and retry failed ones; converted series are never touched (if
-    their source files changed, that is reported).
+    The dataset is written into SOURCE unless --output names another directory. The first run
+    creates it. Later runs (same SOURCE and output) add new series, rescan series that are not
+    converted yet and retry failed ones; converted series are never touched (if their source
+    files changed, that is reported).
     """
+    if dataset is None:
+        dataset = source
     first_run = not manifest_path(dataset).exists()
     result = scan_directory(source, exclude=dataset, progress=_progress)
     if first_run:
