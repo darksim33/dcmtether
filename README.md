@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/logo.svg" alt="DCMtether logo" width="240"></p>
+
 # DCMtether
 
 Lossless DICOM ⇄ NIfTI round trips for MRI series, as a basis for derivatives (segmentations,
