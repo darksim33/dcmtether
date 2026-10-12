@@ -29,8 +29,15 @@ BIDS-inspired, not BIDS-compliant:
 | `chunk-` | one per image plane when a series holds several (e.g. localizers), InstanceNumber order |
 | suffix | `dwi` for diffusion; else `T1w`/`T2w`/`PDw`/`FLAIR` from keywords in the `acq-` text or from TR/TE/TI; else `MR` |
 
-Name clashes are never resolved silently: series sharing a file name are numbered and reported
-as a warning; subject and session label clashes make the affected series fail with a reason.
+Name clashes are never resolved silently:
+
+- Different PatientIDs giving the same `sub-` label (e.g. phantoms or study codes in
+  PatientName) get a two-digit number appended, `sub-PhantQa01`, `sub-PhantQa02`, …, in the
+  manifest order of each patient's first series, reported as a warning. A patient converted
+  before the clash appeared keeps its label; its number is not reused.
+- Series sharing a file name are numbered (`_XX`) and reported as a warning.
+- Session label clashes (several studies of one subject with the same StudyDate and StudyTime)
+  make the affected series fail with a reason.
 
 ## NIfTI
 

@@ -38,6 +38,13 @@ Each series ends up in one of three states (see [supported inputs](supported-inp
 `supported` (one NIfTI), `split` (one NIfTI per image plane, `chunk-<n>`) or `unsupported`
 (with a reason; never converted "best effort").
 
+### Progress
+
+In a terminal, `run`, `scan` and `to-nii` show progress bars on stderr (reading headers,
+classifying, converting). They show counts only, never file or patient names, and disappear
+when done. They are not shown when the output is redirected; set `TQDM_DISABLE=1` to turn them
+off in a terminal as well.
+
 ## Back to DICOM
 
 ### `to-dcm NIFTI OUTPUT`
