@@ -9,7 +9,7 @@ patients** (file names are built from PatientName and StudyDate): never share it
 
 ```
 uv sync
-uv run dcmtether run /path/to/dicom /path/to/dataset     # scan + convert (rerunnable)
+uv run dcmtether run /path/to/dicom -o /path/to/dataset  # scan + convert (rerunnable; default output: the DICOM folder)
 uv run dcmtether to-dcm DATASET/sub-…/….nii.gz rebuilt/  # back to identical DICOM
 uv run dcmtether to-seg NIFTI labels.nii.gz seg-template.json seg.dcm
 ```

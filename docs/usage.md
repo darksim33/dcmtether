@@ -19,10 +19,12 @@ your tool ──▶ label map / ADC map on the NIfTI grid
 
 ## Converting
 
-### `run SOURCE DATASET [--verbose]`
+### `run SOURCE [--output/-o DATASET] [--verbose]`
 
-Scans SOURCE (headers only) and converts every convertible series into DATASET. Safe to run
-again on the same SOURCE: new series are added (with new ids), series that are not converted
+Scans SOURCE (headers only) and converts every convertible series into DATASET, which is SOURCE
+itself unless `--output` names another directory. In-place, the dataset's own top-level entries
+(`manifest.sqlite`, `README.md`, `logs/`, `sub-*/`) are left out of later scans, so SOURCE
+should not hold folders with those names. Safe to run again on the same SOURCE and DATASET: new series are added (with new ids), series that are not converted
 yet are rescanned, failed ones are retried. Converted series are never touched; if their source
 files changed, that is reported (delete their outputs and manifest entry to redo them). A
 different SOURCE for an existing dataset is refused. `--verbose` lists every series.

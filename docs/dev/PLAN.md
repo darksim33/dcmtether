@@ -297,6 +297,7 @@ Outcome and decisions:
 - `run` keeps manifest ids stable across reruns; the update is one transaction; skipped files are replaced by the latest scan. Outcomes now carry the number of NIfTIs written (chunks).
 - Logs: `start`/`end` around every command, `error` with the safe message, per-series `series_classified`/`series_converted`/`series_failed`, `scanned`, `manifest_updated`, `written`. A test asserts no names, UIDs, dates or paths reach the log.
 - Docs are kept honest by tests: every CLI command appears in `docs/usage.md`, the example templates parse, documented log fields exist, README links resolve.
+- `run SOURCE [-o DATASET]` (changed 2026-10-12): the output is optional and defaults to SOURCE; in-place, scans skip the dataset's top-level entries (`manifest.sqlite*`, `README.md`, `logs/`, `sub-*/`). `scan SOURCE DATASET` keeps its positional output.
 - Progress bars (added 2026-10-09): `tqdm` on stderr for `scan`/`to-nii`/`run` (reading headers, classifying, converting), terminal only, removed when done, `TQDM_DISABLE=1` to switch off. Library functions take an optional `progress` hook (`dcmtether.progress`) and stay UI-free; bars show fixed labels and counts only (no PHI).
 
 ### Future features (not scheduled)
