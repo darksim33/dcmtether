@@ -37,7 +37,9 @@ def dataset(tmp_path) -> Path:
     for ds in series.datasets:
         ds.PatientName = ""  # fails naming
     write_series(series, tmp_path / "src" / "c")
-    result = CliRunner().invoke(main, ["run", str(tmp_path / "src"), str(tmp_path / "dataset")])
+    result = CliRunner().invoke(
+        main, ["run", str(tmp_path / "src"), "-o", str(tmp_path / "dataset")]
+    )
     assert result.exit_code == 1, result.output
     return tmp_path / "dataset"
 

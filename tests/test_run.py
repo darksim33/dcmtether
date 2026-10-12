@@ -15,7 +15,7 @@ from dcmtether.scan import scan
 
 
 def _run(source: Path, dataset: Path, *extra: str):
-    return CliRunner().invoke(main, ["run", str(source), str(dataset), *extra])
+    return CliRunner().invoke(main, ["run", str(source), "-o", str(dataset), *extra])
 
 
 def _series(number: int, **kw):
@@ -31,6 +31,22 @@ def test_first_run_scans_and_converts(tmp_path):
     assert "Manifest: 2 new series, 0 rescanned, 0 unchanged." in result.output
     assert "Converted 2 series, 0 failed." in result.output
     assert len(output_rows(tmp_path / "dataset")) == 2
+
+
+def test_without_output_the_dataset_is_written_into_source(tmp_path):
+    write_series(_series(1), tmp_path / "src" / "a")
+    (tmp_path / "src" / "notes.txt").write_text("x")
+    result = CliRunner().invoke(main, ["run", str(tmp_path / "src")])
+    assert result.exit_code == 0, result.output
+    assert "Converted 1 series, 0 failed." in result.output
+    assert (tmp_path / "src" / "manifest.sqlite").is_file()
+    assert len(output_rows(tmp_path / "src")) == 1
+
+    # the dataset's own files are not read back as source files
+    result = CliRunner().invoke(main, ["run", str(tmp_path / "src")])
+    assert result.exit_code == 0, result.output
+    assert "Scanned 6 files: 5 DICOM instances in 1 series, 1 file skipped." in result.output
+    assert "Manifest: 0 new series, 0 rescanned, 1 unchanged." in result.output
 
 
 def test_rerun_without_changes_does_nothing(tmp_path):

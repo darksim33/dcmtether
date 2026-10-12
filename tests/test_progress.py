@@ -59,7 +59,9 @@ def test_convert_reports_only_series_to_convert(tmp_path):
 
 
 def test_no_progress_bar_without_terminal(tmp_path):
-    result = CliRunner().invoke(main, ["run", str(_source(tmp_path)), str(tmp_path / "dataset")])
+    result = CliRunner().invoke(
+        main, ["run", str(_source(tmp_path)), "-o", str(tmp_path / "dataset")]
+    )
     assert result.exit_code == 0, result.output
     assert "Converted 2 series, 0 failed." in result.output
     assert "Converting" not in result.output and "it/s" not in result.output
