@@ -509,6 +509,32 @@ def test_full_names_can_be_chosen_while_nothing_is_converted(tmp_path):
     assert _subject_names(dataset) == [("full",)]
 
 
+@pytest.mark.parametrize(
+    ("first", "second", "subjects"),
+    [
+        ("PHANTOM1^QA", "PHANTOM2^QA", {1: "Phantom1Qa", 2: "Phantom2Qa"}),  # digits
+        ("DOE^JOHN^A", "DOE^JOHN^B", {1: "DoeJohnA", 2: "DoeJohnB"}),  # middle name
+        ("MUELLER^THOMAS", "MUELLERS^THOMASINA", {1: "MuellerThomas", 2: "MuellersThomasina"}),
+    ],
+)
+def test_full_names_that_differ_are_no_clash(tmp_path, first, second, subjects):
+    dataset = _dataset(tmp_path, _patient(1, first, "P1"), _patient(2, second, "P2"))
+    outcomes = convert_dataset(dataset, full_name=True)
+    assert all(o.ok and o.warning is None for o in outcomes)
+    assert _subjects(dataset) == subjects
+
+
+def test_clash_numbers_never_give_another_patients_label(tmp_path):
+    dataset = _dataset(
+        tmp_path,
+        _patient(1, "PHANTOM1^", "P1"),
+        _patient(2, "PHANTOM1^", "P2"),
+        _patient(3, "PHANTOM101^", "P3"),
+    )
+    assert all(o.ok for o in convert_dataset(dataset, full_name=True))
+    assert _subjects(dataset) == {1: "Phantom102", 2: "Phantom103", 3: "Phantom101"}
+
+
 def test_full_name_clash_is_numbered(tmp_path):
     dataset = _dataset(
         tmp_path, _patient(1, "PHANTOM^QA", "QA-1"), _patient(2, "PHANTOM^QA", "QA-2")

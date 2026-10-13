@@ -181,15 +181,18 @@ def test_diffusion_map_suffix_none(image_type, text):
         ("Strauß^Jürgen", "StraussJuergen"),
         ("van der Berg^Anna-Lena", "VanderbergAnnalena"),
         ("DOE", "Doe"),
-        ("DOE^JOHN^MIDDLE^DR^JR", "DoeJohn"),
+        ("DOE^JOHN^MIDDLE^DR^JR", "DoeJohnMiddle"),
         ("Li^Wei", "LiWei"),
+        ("PHANTOM 2^QA", "Phantom2Qa"),
+        ("Study01^Sub-007", "Study01Sub007"),
+        ("123^456", "123456"),
     ],
 )
 def test_subject_label_full(name, label):
     assert naming.subject_label(name, full=True) == label
 
 
-@pytest.mark.parametrize("name", [None, "", "^", "123^456"])
+@pytest.mark.parametrize("name", [None, "", "^", "李^伟"])
 def test_subject_label_full_errors(name):
     with pytest.raises(LabelError):
         naming.subject_label(name, full=True)
