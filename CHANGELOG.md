@@ -66,6 +66,7 @@ First release. Research use only — not for clinical or diagnostic use.
   - Missing slices or uneven spacing.
   - Volumes no attribute tells apart (e.g. GE fMRI).
   - Legacy Converted Enhanced MR.
+  - Enhanced MR files whose frames lie in several image planes.
   - Non-MR images.
 - Derivatives need a 3D source.
 - Only `anat/` and `dwi/` folders so far.

@@ -25,6 +25,7 @@ stored in the manifest.
 | Siemens mosaic | not unpacked yet |
 | Missing slices, uneven spacing, sheared stacks, mixed slice thickness | would need resampling or guessing |
 | Volumes no attribute tells apart (e.g. GE fMRI) | the volume of each image would be a guess |
+| Enhanced MR file whose frames lie in several image planes | a chunk is made of whole files; frames of one file cannot go to different chunks yet |
 | Rescale differing within one volume | NIfTI has one scaling per volume at most |
 | Mixed SOP classes, transfer syntaxes, frames of reference or studies in one series | not one image series |
 | Non-MR SOP classes, colour images, Legacy Converted Enhanced MR, multi-frame classic MR | out of scope |
