@@ -80,8 +80,15 @@ never to NIfTI order. Version 2 files are still read.
 Readable BIDS-style keys (times in seconds) — not used to rebuild the DICOM, no patient
 identifiers. `DcmTether` holds tool information: `Version`, `SuffixRule`, `AcqSource`
 (SeriesDescription/ProtocolName), `Duplicate` (the `_XX` counter), `DiffusionSource`, `Chunk`,
-and for 4D series `VolumeKey` (the attribute that tells the volumes apart) and `PerVolume`
-(values that differ between volumes).
+and for 4D series `VolumeKey` (the DICOM attribute that tells the volumes apart) and
+`PerVolume` (values that differ between volumes).
+
+`PerVolume` uses the same keys and units as the top level: times are in seconds, and the
+echo time of an enhanced series (`EffectiveEchoTime`) is listed as `EchoTime`. Attributes
+without a sidecar key (`EchoNumbers`, `TriggerTime`, diffusion values, …) are listed under
+their DICOM keyword, unchanged. Sidecars written before this rule may list `EchoTime` or
+`InversionTime` in milliseconds when that attribute was the volume key; they are not
+rewritten.
 
 Diffusion b-values and gradients come from `DiffusionBValue (0018,9087)` /
 `DiffusionGradientOrientation (0018,9089)`; when those are missing (older classic exports), from

@@ -22,6 +22,8 @@ First release. Research use only — not for clinical or diagnostic use.
 - DICOM → NIfTI conversion: raw stored values, closest-RAS reorientation without resampling,
   uniform rescale in `scl_slope`/`scl_inter`, a BIDS-style sidecar and a `*.tether.json`
   (format v3) holding everything needed to rebuild the DICOM.
+- Sidecar times are in seconds throughout, including the per-volume values of 4D series
+  (`DcmTether.PerVolume`).
 - 4D series (multi-echo, diffusion, dynamics) as one 4D NIfTI; series with several image
   planes (localizers) as one NIfTI per plane (`chunk-<n>`).
 - Diffusion b-values and gradients from the standard elements, or from Siemens, GE and
