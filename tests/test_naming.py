@@ -135,3 +135,61 @@ def test_file_stem():
     assert naming.series_label(123) == "123"
     with pytest.raises(LabelError):
         naming.series_label(None)
+
+
+@pytest.mark.parametrize(
+    ("image_type", "text", "suffix", "rule"),
+    [
+        (("DERIVED", "PRIMARY", "DIFFUSION", "ADC", "ND"), "ep2d_diff", "ADC", "imagetype:adc"),
+        (("DERIVED", "PRIMARY", "DIFFUSION", "FA"), "ep2d_diff", "FA", "imagetype:fa"),
+        (("DERIVED", "PRIMARY", "DIFFUSION", "TRACEW"), "ep2d_diff", "TRACE", "imagetype:tracew"),
+        (("derived", "primary", "eadc"), None, "eADC", "imagetype:eadc"),
+        (("DERIVED", "PRIMARY", "ADC"), "DTI_FA", "ADC", "imagetype:adc"),  # ImageType wins
+        (("ORIGINAL", "PRIMARY", "M", "ND"), "ep2d_diff_ADC", "ADC", "keyword:adc"),
+        ((), "Apparent Diffusion Coefficient", "ADC", "keyword:adc"),
+        ((), "ep2d_diff_TRACEW", "TRACE", "keyword:trace"),
+        ((), "DTI_FA", "FA", "keyword:fa"),
+        ((), "Fractional Anisotropy", "FA", "keyword:fa"),
+    ],
+)
+def test_diffusion_map_suffix(image_type, text, suffix, rule):
+    assert naming.diffusion_map_suffix(image_type, text) == naming.Suffix(suffix, rule)
+    assert suffix in naming.DIFFUSION_MAP_SUFFIXES
+
+
+@pytest.mark.parametrize(
+    ("image_type", "text"),
+    [
+        (("ORIGINAL", "PRIMARY", "M", "ND"), "T2_tse"),
+        ((), "t1_fa15"),  # flip angle, no diffusion word
+        ((), "vibe_fa_2"),
+        ((), "fast_spin_echo"),
+        ((), "adcx"),
+        ((), None),
+        ((), "DTI_ADC_FA"),  # two maps named: ambiguous
+        (("DERIVED", "PRIMARY", "ADC", "FA"), "ep2d_diff"),
+    ],
+)
+def test_diffusion_map_suffix_none(image_type, text):
+    assert naming.diffusion_map_suffix(image_type, text) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "label"),
+    [
+        ("MÜLLER^THOMAS", "MuellerThomas"),
+        ("Strauß^Jürgen", "StraussJuergen"),
+        ("van der Berg^Anna-Lena", "VanderbergAnnalena"),
+        ("DOE", "Doe"),
+        ("DOE^JOHN^MIDDLE^DR^JR", "DoeJohn"),
+        ("Li^Wei", "LiWei"),
+    ],
+)
+def test_subject_label_full(name, label):
+    assert naming.subject_label(name, full=True) == label
+
+
+@pytest.mark.parametrize("name", [None, "", "^", "123^456"])
+def test_subject_label_full_errors(name):
+    with pytest.raises(LabelError):
+        naming.subject_label(name, full=True)

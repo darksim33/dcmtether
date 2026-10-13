@@ -543,3 +543,9 @@ def test_cli_to_dcm_error(tmp_path, converted):
     assert result.exit_code == 1
     assert "already exists" in result.output
     assert "sub-" not in result.output and "IM_0" not in result.output
+
+
+def test_diffusion_map_round_trip_is_identical(tmp_path):
+    spec = SeriesSpec(extra={"ImageType": ["DERIVED", "PRIMARY", "DIFFUSION", "ADC"]})
+    report = round_trip(_write(make_series(spec), tmp_path), tmp_path)
+    _assert_identical(report)

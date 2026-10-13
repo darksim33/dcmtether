@@ -168,3 +168,24 @@ def test_verbose_lists_every_series(tmp_path):
     assert "  series #1 converted (1 output)" in result.output
     for secret in ("Synth", "Phantom", "2.25.", "20260101", "sub-"):
         assert secret not in result.output
+
+
+def test_full_name_is_set_on_the_first_run_and_kept(tmp_path):
+    write_series(_series(1), tmp_path / "src" / "a")
+    result = _run(tmp_path / "src", tmp_path / "dataset", "-fv")
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "dataset" / "sub-SyntheticPhantom").is_dir()
+    write_series(_series(2), tmp_path / "src" / "b")
+    result = _run(tmp_path / "src", tmp_path / "dataset")
+    assert result.exit_code == 0, result.output
+    assert [r["subject"] for r in manifest_rows(tmp_path / "dataset")] == ["SyntheticPhantom"] * 2
+    assert not (tmp_path / "dataset" / "sub-SynthPhant").exists()
+
+
+def test_full_name_is_refused_for_a_short_label_dataset(tmp_path):
+    write_series(_series(1), tmp_path / "src" / "a")
+    _run(tmp_path / "src", tmp_path / "dataset")
+    result = _run(tmp_path / "src", tmp_path / "dataset", "--full-name")
+    assert result.exit_code == 1
+    assert "this dataset uses short subject labels" in result.output
+    assert "Synth" not in result.output

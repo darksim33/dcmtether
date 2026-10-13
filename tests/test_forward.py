@@ -25,7 +25,7 @@ from synthetic import (
 from dcmtether import orientation
 from dcmtether.cli import main
 from dcmtether.forward import convert_dataset
-from dcmtether.manifest import update_manifest, write_manifest
+from dcmtether.manifest import ManifestError, update_manifest, write_manifest
 from dcmtether.scan import scan
 
 # Synthetic defaults: PatientName "Synthetic^Phantom", StudyDate 20260101, description
@@ -470,6 +470,53 @@ def test_converted_patient_keeps_its_subject_label(tmp_path):
     assert _subjects(dataset) == {1: "PhantQa", 2: "PhantQa02", 3: "PhantQa"}
 
 
+def _subject_names(dataset: Path) -> list[tuple]:
+    with sqlite3.connect(dataset / "manifest.sqlite") as db:
+        return db.execute("SELECT value FROM meta WHERE key = 'subject_names'").fetchall()
+
+
+def test_full_name_subject_labels_are_kept_for_the_dataset(tmp_path):
+    write_series(_patient(1, "MÜLLER^THOMAS", "P1"), tmp_path / "src" / "s0")
+    dataset = tmp_path / "dataset"
+    write_manifest(dataset, scan(tmp_path / "src"))
+    assert all(o.ok for o in convert_dataset(dataset, full_name=True))
+    assert (dataset / "sub-MuellerThomas").is_dir()
+    assert _subject_names(dataset) == [("full",)]
+    # Later runs need no flag: the dataset remembers.
+    write_series(_patient(2, "MÜLLER^THOMAS", "P1", date="20260202"), tmp_path / "src" / "s1")
+    update_manifest(dataset, scan(tmp_path / "src"))
+    assert all(o.ok for o in convert_dataset(dataset))
+    assert _subjects(dataset) == {1: "MuellerThomas", 2: "MuellerThomas"}
+
+
+def test_full_names_are_refused_for_a_dataset_converted_with_short_labels(tmp_path):
+    dataset = _dataset(tmp_path, _patient(1, "MUELLER^THOMAS", "P1"))
+    assert all(o.ok for o in convert_dataset(dataset))
+    assert _subject_names(dataset) == [("brief",)]
+    with pytest.raises(ManifestError, match="short subject labels") as exc:
+        convert_dataset(dataset, full_name=True)
+    assert "uell" not in str(exc.value)
+    assert _subjects(dataset) == {1: "MuellThoma"}
+
+
+def test_full_names_can_be_chosen_while_nothing_is_converted(tmp_path):
+    series = _patient(1, "MUELLER^THOMAS", "P1")
+    for ds in series.datasets:
+        ds.StudyDate = ""  # fails: nothing gets converted
+    dataset = _dataset(tmp_path, series)
+    assert not any(o.ok for o in convert_dataset(dataset))
+    convert_dataset(dataset, full_name=True)
+    assert _subject_names(dataset) == [("full",)]
+
+
+def test_full_name_clash_is_numbered(tmp_path):
+    dataset = _dataset(
+        tmp_path, _patient(1, "PHANTOM^QA", "QA-1"), _patient(2, "PHANTOM^QA", "QA-2")
+    )
+    assert all(o.ok for o in convert_dataset(dataset, full_name=True))
+    assert _subjects(dataset) == {1: "PhantomQa01", 2: "PhantomQa02"}
+
+
 def test_same_patient_two_studies_same_day_get_time_suffix(tmp_path):
     a = _patient(1, "DOE^JANE", "P1", time="093000", study="2.25.11")
     b = _patient(2, "DOE^JANE", "P1", time="141500", study="2.25.12", number=2)
@@ -705,3 +752,38 @@ def test_enhanced_sidecar_uses_functional_groups(tmp_path):
     assert sidecar["DcmTether"]["VolumeKey"] == ["EffectiveEchoTime"]
     assert sidecar["DcmTether"]["PerVolume"]["EchoTime"] == [0.015, 0.03, 0.045]
     assert sidecar["SliceThickness"] == 3.0  # from PixelMeasuresSequence
+
+
+ADC_IMAGE_TYPE = ["DERIVED", "PRIMARY", "DIFFUSION", "ADC"]
+
+
+@pytest.mark.parametrize(
+    ("description", "image_type", "suffix", "rule"),
+    [
+        ("ep2d_diff", ADC_IMAGE_TYPE, "ADC", "imagetype:adc"),
+        ("ep2d_diff_ADC", None, "ADC", "keyword:adc"),
+        ("DTI_FA", None, "FA", "keyword:fa"),
+    ],
+)
+def test_diffusion_maps_go_to_dwi_with_their_own_suffix(
+    tmp_path, description, image_type, suffix, rule
+):
+    extra = {} if image_type is None else {"ImageType": image_type}
+    series = make_series(SeriesSpec(series_description=description, extra=extra))
+    dataset = _dataset(tmp_path, series)
+    assert all(o.ok for o in convert_dataset(dataset))
+    [row] = output_rows(dataset)
+    nifti = Path(row["nifti_path"])
+    assert nifti.parts[:3] == ("sub-SynthPhant", "ses-20260101", "dwi")
+    assert nifti.name.endswith(f"_ser-01_{suffix}.nii.gz")
+    sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
+    assert sidecar["DcmTether"]["SuffixRule"] == rule
+
+
+def test_flip_angle_in_the_description_is_not_an_fa_map(tmp_path):
+    stem, _ = _converted_stem_and_sidecar(
+        tmp_path, make_series(SeriesSpec(series_description="t1_fa15"))
+    )
+    assert stem.endswith("_T1w")
+    [row] = output_rows(tmp_path / "dataset")
+    assert Path(row["nifti_path"]).parts[2] == "anat"
