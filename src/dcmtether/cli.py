@@ -1,7 +1,7 @@
 """Command-line interface (see docs/usage.md).
 
 Output and logs never name patients, UIDs or paths: series are referred to by manifest id.
-Commands that work on a dataset append structured records to ``DATASET/logs/dcmtether.jsonl``
+Commands that work on a dataset append structured records to ``DATASET/logs/dcmtether_<time>.jsonl``
 (:mod:`dcmtether.log`).
 """
 
@@ -31,7 +31,7 @@ from dcmtether.manifest import (
 from dcmtether.pmap import PmapError, to_pmap
 from dcmtether.pmap import load_metadata as load_pmap_metadata
 from dcmtether.reverse import ReverseError, tether_path_for, to_dicom, transfer_syntax_change
-from dcmtether.scan import ScanResult, Status, plural
+from dcmtether.scan import ScanResult, Status, plural, subject_folders
 from dcmtether.scan import scan as scan_directory
 from dcmtether.seg import SegError, load_metadata, to_seg
 from dcmtether.tether import TetherError
@@ -60,9 +60,12 @@ def _progress(iterable: Iterable, **kwargs) -> Iterable:
 
 
 @contextmanager
-def _logged(dataset: Path | None, command: str) -> Iterator[DatasetLog]:
-    """start/end records around a command; ClickExceptions are logged with their message."""
-    logger = DatasetLog(dataset, command)
+def _logged(dataset: Path | None, command: str, new_file: bool = False) -> Iterator[DatasetLog]:
+    """start/end records around a command; ClickExceptions are logged with their message.
+
+    ``new_file``: the command starts its own log file (``run``, ``scan``, ``to-nii``).
+    """
+    logger = DatasetLog(dataset, command, new_file)
     logger.end_fields = {}
     logger.event("start")
     try:
@@ -150,6 +153,19 @@ def _report_conversion(outcomes: list[Outcome], logger, verbose: bool) -> int:
     return len(failed)
 
 
+def _check_first_in_place(source: Path, dataset: Path) -> None:
+    """Refuse to start a dataset inside a SOURCE that has ``sub-*`` folders of its own.
+
+    Scans of an in-place dataset skip its subject folders; folders that were there before
+    would be skipped with them (and mixed with the dataset's). Nothing is written.
+    """
+    if source.resolve() != dataset.resolve():
+        return
+    n = subject_folders(source)
+    if n:
+        raise click.ClickException(f"SOURCE already has sub-* folders ({n}); use --output")
+
+
 @main.command()
 @click.argument("source", type=_existing_dir)
 @click.argument("dataset", type=_output_dir)
@@ -158,16 +174,16 @@ def scan(source: Path, dataset: Path) -> None:
 
     Writes the manifest to the DATASET directory.
     """
-    target = manifest_path(dataset)
-    if target.exists():
-        raise click.ClickException(f"manifest already exists: {target}")
+    if manifest_path(dataset).exists():
+        raise click.ClickException("manifest already exists in DATASET")
+    _check_first_in_place(source, dataset)
     result = scan_directory(source, exclude=dataset, progress=_progress)
     write_manifest(dataset, result)
-    with _logged(dataset, "scan") as logger:
+    with _logged(dataset, "scan", new_file=True) as logger:
         _log_scanned(logger, result)
         _scan_summary(result)
         _report_series(result, series_ids(dataset), logger)
-        click.echo(f"Manifest: {target}")
+        click.echo("Manifest written.")
 
 
 @main.command("to-nii")
@@ -181,7 +197,7 @@ def to_nii(dataset: Path, full_name: bool, verbose: bool) -> None:
     File names contain patient names and study dates, so the dataset must not be shared as is.
     """
     has_manifest = manifest_path(dataset).exists()
-    with _logged(dataset if has_manifest else None, "to-nii") as logger:
+    with _logged(dataset if has_manifest else None, "to-nii", new_file=True) as logger:
         try:
             outcomes = convert_dataset(dataset, _progress, full_name or None)
         except ManifestError as exc:
@@ -213,10 +229,12 @@ def run(source: Path, dataset: Path | None, full_name: bool, verbose: bool) -> N
     if dataset is None:
         dataset = source
     first_run = not manifest_path(dataset).exists()
+    if first_run:
+        _check_first_in_place(source, dataset)
     result = scan_directory(source, exclude=dataset, progress=_progress)
     if first_run:
         write_manifest(dataset, result)
-    with _logged(dataset, "run") as logger:
+    with _logged(dataset, "run", new_file=True) as logger:
         if first_run:
             new, rescanned, unchanged = sorted(series_ids(dataset).values()), [], []
             changed: list[int] = []
@@ -387,7 +405,7 @@ def to_mr_command(nifti: Path, derivative: Path, metadata: Path, output: Path) -
 
     Fallback for PACS without SEG/Parametric Map support. DERIVATIVE lies on the grid of
     NIFTI; METADATA is a dcmqi SEG template (label map: label values as pixels) or parametric
-    map template (map: float maps are quantised to 16 bits). Research use only.
+    map template (map: float maps are quantized to 16 bits). Research use only.
     """
     context, series_id = _source_log(nifti, "to-mr")
     with context as logger:
@@ -398,6 +416,5 @@ def to_mr_command(nifti: Path, derivative: Path, metadata: Path, output: Path) -
         logger.event("written", series_id=series_id, count=len(result.paths), kind=result.kind)
         click.echo(f"Wrote {plural(len(result.paths), 'derived MR image')} ({result.kind}).")
         if result.max_error > 0:
-            click.echo(
-                f"Quantized to 16 bits: max error {result.max_error:.3g} (to-pmap is exact)."
-            )
+            cause = "Rescale rounded to DS precision" if result.rounded else "Quantized to 16 bits"
+            click.echo(f"{cause}: max error {result.max_error:.3g} (to-pmap is exact).")

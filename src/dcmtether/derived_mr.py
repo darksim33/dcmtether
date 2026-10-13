@@ -6,8 +6,9 @@ equipment and research labeling; private tags, overlays, icons and values that d
 source pixels are removed. Pixel values:
 
 - label map (dcmqi SEG template): label values as pixels, exact;
-- map (dcmqi parametric map template): integer maps exact (RescaleSlope/Intercept); float maps
-  quantised to 16 bits (MR images hold integers) with the maximum error computed and reported.
+- map (dcmqi parametric map template): integer maps exact up to the rounding of
+  RescaleSlope/Intercept to DS precision (reported if not zero); float maps
+  quantized to 16 bits (MR images hold integers) with the maximum error computed and reported.
   The Parametric Map (``to-pmap``) remains the lossless representation.
 
 Error messages never contain element values or file names.
@@ -18,6 +19,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import nibabel as nib
 import numpy as np
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage
@@ -91,6 +93,9 @@ class DerivedMRResult:
     kind: str  # "map" or "labels"
     #: Largest |written real value - NIfTI value| (0 if exact).
     max_error: float
+    #: The error comes from writing the rescale values as DS only (integer map: the stored
+    #: values are exact), not from quantizing a float map to 16 bits.
+    rounded: bool = False
 
 
 def _label_pixels(path: Path, source, metadata: seg.SegMetadata):
@@ -102,6 +107,11 @@ def _label_pixels(path: Path, source, metadata: seg.SegMetadata):
 
 def _ds(value: float) -> DS:
     return DS(value, auto_format=True)
+
+
+def _as_written(value: float) -> float:
+    """The number a reader gets: DS holds 16 characters (float(DS) still gives the original)."""
+    return float(str(_ds(value)))
 
 
 def _map_pixels(path: Path, source):
@@ -117,7 +127,7 @@ def _map_pixels(path: Path, source):
         raise DerivedMRError("map has NaN or infinite values (replace them, e.g. with 0)")
     low, high = float(real.min()), float(real.max())
     slope = (high - low) / _UINT16_MAX if high > low else 1.0
-    slope, intercept = float(_ds(slope)), float(_ds(low))
+    slope, intercept = _as_written(slope), _as_written(low)
     stored = np.clip(np.rint((real - intercept) / slope), 0, _UINT16_MAX).astype(np.uint16)
     return stored, slope, intercept, real
 
@@ -187,6 +197,7 @@ def to_derived_mr(
         check_output(target)
 
     is_labels = isinstance(metadata, seg.SegMetadata)
+    rounded = False
     if is_labels:
         stored, slope, intercept, real = _label_pixels(derivative_nifti, source, metadata)
         derivation = "dcmtether: label map (pixel value = label value)"
@@ -197,14 +208,16 @@ def to_derived_mr(
         quantity, units = metadata.quantity.meaning, metadata.units.meaning
         derivation = f"dcmtether: {quantity} map ({units})"
         rescale = (slope, intercept, metadata.units.value)
-        written = stored.astype(np.float64) * float(_ds(slope)) + float(_ds(intercept))
+        written = stored.astype(np.float64) * _as_written(slope) + _as_written(intercept)
         max_error = float(np.max(np.abs(written - real)))
+        rounded = nib.load(derivative_nifti).get_data_dtype().kind in "iu"
     frames = source.frames(stored)
     real_low = float(frames.min()) * slope + intercept
     real_high = float(frames.max()) * slope + intercept
     comments = f"{CONTENT_DESCRIPTION}. {derivation}"
     if max_error > 0:
-        comments += f"; quantized to 16 bits, max error {max_error:.3g}"
+        cause = "rescale rounded to DS precision" if rounded else "quantized to 16 bits"
+        comments += f"; {cause}, max error {max_error:.3g}"
     info = {
         "series_number": metadata.series_number,
         "series_description": series_description(metadata.series_description),
@@ -226,12 +239,12 @@ def to_derived_mr(
                 uid = uids.derived_uid(template.SOPInstanceUID, "derived-mr", content, "instance")
                 image = _image(template, plane, n, uid, series_uid, info)
                 partial = target.with_name(target.name + ".partial")
+                written_paths.append(partial)  # before writing: a failed write leaves a file
                 image.save_as(partial, enforce_file_format=True)
-                written_paths.append(partial)
             for partial, target in zip(written_paths, targets, strict=True):
                 partial.rename(target)
     except BaseException:
         for path in (*written_paths, *targets):
             path.unlink(missing_ok=True)
         raise
-    return DerivedMRResult(targets, "labels" if is_labels else "map", max_error)
+    return DerivedMRResult(targets, "labels" if is_labels else "map", max_error, rounded)

@@ -128,7 +128,7 @@ def open_manifest(dataset: Path) -> sqlite3.Connection:
     """Open an existing manifest, upgrading old schema versions in place."""
     path = manifest_path(dataset)
     if not path.exists():
-        raise ManifestError(f"no manifest in {dataset} (run 'dcmtether scan' first)")
+        raise ManifestError("no manifest in DATASET (run 'dcmtether scan' first)")
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     with db:
@@ -312,7 +312,7 @@ def write_manifest(dataset: Path, result: ScanResult) -> Path:
     """
     target = manifest_path(dataset)
     if target.exists():
-        raise FileExistsError(f"manifest already exists: {target}")
+        raise FileExistsError("manifest already exists in DATASET")
     dataset.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(".sqlite.partial")
     partial.unlink(missing_ok=True)
@@ -351,6 +351,36 @@ class ManifestUpdate:
     missing: list[int] = field(default_factory=list)
 
 
+def _release_paths(db: sqlite3.Connection, result: ScanResult, known: dict) -> None:
+    """Free the paths the new scan gives to series that are (re)written.
+
+    A path belongs to one series (primary key), but files get replaced between scans. Rows of
+    series that are rescanned anyway go first; a series the scan no longer finds loses the
+    paths that are another series' files now. A converted series keeps its rows: a file of
+    it that belongs to another series now is an error (by id).
+    """
+    claimed: dict[str, str] = {}  # path -> the series that has the file now
+    for series in result.series:
+        series_id, conversion_status = known.get(series.series_instance_uid, (None, None))
+        if conversion_status == "converted":
+            continue
+        if series_id is not None:
+            db.execute("DELETE FROM instances WHERE series_id = ?", (series_id,))
+        owner = "a new series" if series_id is None else f"series #{series_id}"
+        claimed.update((_relative(path, result.root), owner) for path in series.files)
+    converted = {sid for sid, status in known.values() if status == "converted"}
+    for row in db.execute("SELECT path, series_id FROM instances").fetchall():
+        if row["path"] not in claimed:
+            continue
+        if row["series_id"] in converted:
+            raise ManifestError(
+                f"a source file of converted series #{row['series_id']} now belongs to "
+                f"{claimed[row['path']]} (restore it, or remove the outputs and manifest entry "
+                f"of series #{row['series_id']})"
+            )
+        db.execute("DELETE FROM instances WHERE path = ?", (row["path"],))
+
+
 def update_manifest(dataset: Path, result: ScanResult) -> ManifestUpdate:
     """Merge a new scan of the same SOURCE into an existing manifest (``dcmtether run``).
 
@@ -368,6 +398,7 @@ def update_manifest(dataset: Path, result: ScanResult) -> ManifestUpdate:
         }
         next_id = 1 + max((sid for sid, _ in known.values()), default=0)
         with db:
+            _release_paths(db, result, known)
             for series in result.series:
                 entry = known.get(series.series_instance_uid)
                 if entry is None:

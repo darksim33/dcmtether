@@ -700,10 +700,18 @@ def classify(series: Series) -> None:
 # --- scanning --------------------------------------------------------------------------------
 
 
-#: What a dataset writes at its top level (manifest, README, logs/, sub-*/), skipped when the
-#: dataset lies inside the scanned folder itself (``run`` without ``--output``).
+#: What a dataset writes at its top level (manifest, README, sub-*/) and its log files in
+#: logs/, skipped when the dataset lies inside the scanned folder itself (``run`` without
+#: ``--output``). Other files in logs/ are read: a source folder may be called that.
 _DATASET_FILES = re.compile(r"manifest\.sqlite(-journal|-wal|-shm)?|README\.md")
-_DATASET_DIRS = re.compile(r"logs|sub-.*")
+_DATASET_DIRS = re.compile(r"sub-.*")
+_LOG_DIR = "logs"
+_LOG_FILES = re.compile(r"dcmtether.*\.jsonl")
+
+
+def subject_folders(root: Path) -> int:
+    """Number of top-level folders of ``root`` named like a dataset's subject folders."""
+    return sum(1 for p in root.iterdir() if p.is_dir() and _DATASET_DIRS.fullmatch(p.name))
 
 
 def _walk(root: Path, exclude: Path | None) -> list[Path]:
@@ -715,6 +723,8 @@ def _walk(root: Path, exclude: Path | None) -> list[Path]:
             if here.resolve() == exclude:
                 dirnames[:] = [d for d in dirnames if not _DATASET_DIRS.fullmatch(d)]
                 filenames = [f for f in filenames if not _DATASET_FILES.fullmatch(f)]
+            elif here.name == _LOG_DIR and here.parent.resolve() == exclude:
+                filenames = [f for f in filenames if not _LOG_FILES.fullmatch(f)]
         dirnames.sort()
         files.extend(here / name for name in sorted(filenames))
     return files

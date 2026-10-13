@@ -711,7 +711,7 @@ it as is. Research use only.
     sub-<subject>/ses-<session>/anat/<stem>.tether.json  everything needed to rebuild the DICOM
     sub-<subject>/ses-<session>/dwi/<stem>.*             the same for diffusion series and maps
     manifest.sqlite                                      scan and conversion records
-    logs/dcmtether.jsonl                                 structured log (ids and counts only)
+    logs/dcmtether_<time>.jsonl                          structured log (ids and counts only)
 
 4D series (multi-echo, diffusion, dynamics) are one 4D NIfTI; values that differ between
 volumes are listed in the sidecar under `DcmTether.PerVolume`. Diffusion b-values and
