@@ -41,6 +41,10 @@ First release. Research use only — not for clinical or diagnostic use.
   `sub-<subject>_ses-<session>[_acq-<acq>]_ser-<NN>[_<XX>][_chunk-<n>]_<suffix>`, in
   `anat/` and `dwi/` folders. `acq-` comes from SeriesDescription (ProtocolName as fallback).
   The suffix (`dwi`, `T1w`, `T2w`, `PDw`, `FLAIR`, `MR`) comes from keywords or TR/TE/TI.
+- Diffusion maps calculated by the scanner are stored in `dwi/` as `ADC`, `eADC`, `FA` or
+  `TRACE`, recognised by ImageType or by keywords.
+- `--full-name`/`-f` for `run` and `to-nii`: subject labels from the full patient name,
+  digits included (`sub-MuellerThomas`) instead of 5+5 letters (`sub-MuellThoma`); fixed per dataset.
 - Name clashes are numbered and reported as warnings, never resolved silently:
   - Different PatientIDs with the same subject label get `sub-<label>01`, `02`, ….
   - Series that would share a file name get `_01`, `_02`, … after `ser-`.
