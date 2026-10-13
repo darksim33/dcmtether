@@ -6,8 +6,10 @@ PHI-grade) manifest only.
 """
 
 import json
+import re
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from itertools import chain, count
 from pathlib import Path
 
 import nibabel as nib
@@ -52,8 +54,16 @@ class LabelInput:
     image_type: tuple[str, ...] = ()
     #: The scan found diffusion volumes (from the manifest geometry, not the header).
     diffusion: bool = False
-    #: Subject label the series was converted under (manifest), if converted already.
-    converted_subject: str | None = None
+
+
+@dataclass(frozen=True)
+class Converted:
+    """A series converted earlier, with the names it has on disk (from the manifest). They are
+    fixed: never rebuilt from the source or from today's naming rules."""
+
+    series_id: int
+    names: manifest.Names
+    study_instance_uid: str | None
 
 
 DWI_SUFFIX = naming.Suffix("dwi", "diffusion volumes")
@@ -76,11 +86,20 @@ class Planned:
     dup: int | None = None
     #: Non-fatal problem reported with the outcome (value-free, like errors).
     warning: str | None = None
+    patient_id: str = ""
+    #: Subject label before clash numbering.
+    subject_base: str | None = None
 
     @property
     def datatype(self) -> str:
         diffusion = self.suffix == DWI_SUFFIX or self.suffix.value in naming.DIFFUSION_MAP_SUFFIXES
         return DWI_DIR if diffusion else DATATYPE_DIR
+
+    @property
+    def names(self) -> manifest.Names:
+        return manifest.Names(
+            self.subject, self.session, self.stem, self.dup, self.patient_id, self.subject_base
+        )
 
     def stem_for(self, chunk: int | None) -> str:
         return naming.file_stem(
@@ -96,9 +115,7 @@ def _float(ds: pydicom.Dataset, keyword: str) -> float | None:
         return None
 
 
-def read_label_input(
-    series_id: int, path: Path, diffusion: bool = False, converted_subject: str | None = None
-) -> LabelInput:
+def read_label_input(series_id: int, path: Path, diffusion: bool = False) -> LabelInput:
     with quiet_pydicom():
         ds = pydicom.dcmread(path, stop_before_pixels=True)
         series_number = ds.get("SeriesNumber")
@@ -120,7 +137,6 @@ def read_label_input(
             inversion_time=_float(ds, "InversionTime"),
             image_type=tuple(str(v) for v in image_type),
             diffusion=diffusion,
-            converted_subject=converted_subject,
         )
 
 
@@ -128,78 +144,129 @@ def _ids(series_ids) -> str:
     return ", ".join(f"#{i}" for i in sorted(series_ids))
 
 
-def _number_subjects(inputs: list[LabelInput], subjects: dict[int, str]) -> dict[int, str]:
-    """Different PatientIDs with the same subject label (e.g. phantoms, study codes as names):
-    numbered ``<label>01``, ``<label>02``, ... in manifest order of each patient's first series.
+@dataclass
+class _Patient:
+    ids: list[int] = field(default_factory=list)  # all series, converted ones included
+    new: list[int] = field(default_factory=list)  # series still to convert
+    subject: str | None = None  # the label the patient was converted under, if any
 
-    Stable across runs: manifest ids never change, and a patient already converted keeps the
-    label it was converted under (its number is then not reused). Returns a warning per
-    affected series. A number that would give another patient's label is skipped.
+
+def _number_subjects(
+    inputs: list[LabelInput], bases: dict[int, str], converted: list[Converted]
+) -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
+    """Subject labels for the series in ``bases`` (series id → label built from the name).
+
+    Different PatientIDs with the same label (e.g. phantoms, study codes as names) are numbered
+    ``<label>01``, ``<label>02``, ... in manifest order of each patient's first series. Stable
+    across runs: manifest ids never change, and a patient already converted keeps the label it
+    was converted under (its number is then not reused). A number that would give another
+    patient's label is skipped.
+
+    Returns ``(subjects, warnings, errors)`` by series id.
     """
-    by_label: dict[str, dict] = defaultdict(dict)  # label -> PatientID -> [LabelInput]
-    for item in inputs:
-        if item.series_id in subjects:
-            by_label[subjects[item.series_id]].setdefault(item.patient_id, []).append(item)
-    warnings: dict[int, str] = {}
-    for label, patients in by_label.items():
-        order = sorted(patients.values(), key=lambda items: min(i.series_id for i in items))
-        kept = [
-            next((i.converted_subject for i in items if i.converted_subject), None)
-            for items in order
-        ]
-        if len(order) == 1 and kept[0] is None:
+    patients: dict[str, dict[str, _Patient]] = defaultdict(dict)  # label -> PatientID -> ...
+    unknown: dict[str, list[int]] = defaultdict(list)  # converted, PatientID not known
+    for series in converted:
+        names = series.names
+        if names.patient_id is None:
+            unknown[names.subject_base].append(series.series_id)
             continue
-        # A numbered label must not equal another patient's own label ("Phantom1" + "01").
-        used = {k for k in kept if k is not None} | (by_label.keys() - {label})
-        numbered: dict[int, str] = {}
-        for n, (items, new) in enumerate(zip(order, kept, strict=True), start=1):
-            if new is None:
-                new = f"{label}{n:02d}"
-                while new in used:  # taken by a patient converted earlier
-                    n += 1
-                    new = f"{label}{n:02d}"
-                used.add(new)
-            for item in items:
-                numbered[item.series_id] = new
-        subjects.update(numbered)
-        if len(order) > 1:
+        patient = patients[names.subject_base].setdefault(names.patient_id, _Patient())
+        patient.ids.append(series.series_id)
+        patient.subject = names.subject
+    for item in inputs:
+        if item.series_id in bases:
+            base = bases[item.series_id]
+            patient = patients[base].setdefault(item.patient_id or "", _Patient())
+            patient.ids.append(item.series_id)
+            patient.new.append(item.series_id)
+
+    taken = {series.names.subject for series in converted}
+    subjects: dict[int, str] = {}
+    warnings: dict[int, str] = {}
+    errors: dict[int, str] = {}
+    for base, group in patients.items():
+        order = sorted(group.values(), key=lambda patient: min(patient.ids))
+        clash = len(order) > 1
+        for n, patient in enumerate(order, start=1):
+            if patient.subject is None and base in unknown:
+                # Whether this is the patient of those series cannot be told: no guessing.
+                error = (
+                    f"cannot check subject label against series {_ids(unknown[base])} "
+                    "(source not readable)"
+                )
+                errors.update(dict.fromkeys(patient.new, error))
+                continue
+            if patient.subject is None:
+                candidates = chain([] if clash else [base], (f"{base}{k:02d}" for k in count(n)))
+                # Not another patient's label, converted ("PhantQa02") or own ("Phantom101").
+                patient.subject = next(
+                    label
+                    for label in candidates
+                    if label not in taken and (label == base or label not in patients)
+                )
+                taken.add(patient.subject)
+            subjects.update(dict.fromkeys(patient.new, patient.subject))
+        if clash:
+            everyone = [sid for patient in order for sid in patient.ids]
             warning = (
                 f"subject label clash: {len(order)} different PatientIDs give the same label "
-                f"(series {_ids(numbered)}), numbered to keep them apart"
+                f"(series {_ids(everyone)}), numbered to keep them apart"
             )
-            warnings.update(dict.fromkeys(numbered, warning))
-    return warnings
+            warnings.update(
+                {sid: warning for patient in order for sid in patient.new if sid in subjects}
+            )
+    return subjects, warnings, errors
 
 
-def plan_labels(inputs: list[LabelInput], full_name: bool = False) -> dict[int, Planned]:
-    """Subject/session labels and file stems for all series, with clash detection.
+def plan_labels(
+    inputs: list[LabelInput], converted: list[Converted] = (), full_name: bool = False
+) -> dict[int, Planned]:
+    """Subject/session labels and file stems for the series still to convert (``inputs``),
+    with clash detection against each other and against the ``converted`` series.
 
     ``full_name``: subject labels from the full patient name instead of 5+5 letters.
     """
     errors: dict[int, str] = {}
-    subjects: dict[int, str] = {}
+    bases: dict[int, str] = {}
     for item in inputs:
         try:
-            subjects[item.series_id] = naming.subject_label(item.patient_name, full_name)
+            bases[item.series_id] = naming.subject_label(item.patient_name, full_name)
         except naming.LabelError as exc:
             errors[item.series_id] = str(exc)
 
     # Different patients (PatientID) must never share a subject label: number them.
     warnings: dict[int, list[str]] = defaultdict(list)
-    for sid, warning in _number_subjects(inputs, subjects).items():
+    subjects, subject_warnings, subject_errors = _number_subjects(inputs, bases, converted)
+    errors.update(subject_errors)
+    for sid, warning in subject_warnings.items():
         warnings[sid].append(warning)
 
     # Sessions: the date, plus StudyTime only when one subject has several studies that day.
+    # A study with converted series keeps the session label those were converted under.
+    converted_session = {
+        (series.names.subject, series.study_instance_uid): series.names.session
+        for series in converted
+    }
     studies_per_day: dict[tuple[str, str], set] = defaultdict(set)
+    study_by_session: dict[tuple[str, str], set] = defaultdict(set)
+    for series in converted:
+        names = series.names
+        studies_per_day[(names.subject, names.session[:8])].add(series.study_instance_uid)
+        study_by_session[(names.subject, names.session)].add(series.study_instance_uid)
     for item in inputs:
-        if item.series_id in subjects and item.series_id not in errors:
+        if item.series_id in subjects:
             studies_per_day[(subjects[item.series_id], item.study_date or "")].add(
                 item.study_instance_uid
             )
     sessions: dict[int, str] = {}
     for item in inputs:
         sid = item.series_id
-        if sid not in subjects or sid in errors:
+        if sid not in subjects:
+            continue
+        kept = converted_session.get((subjects[sid], item.study_instance_uid))
+        if kept is not None:
+            sessions[sid] = kept
             continue
         same_day = len(studies_per_day[(subjects[sid], item.study_date or "")]) > 1
         try:
@@ -207,7 +274,6 @@ def plan_labels(inputs: list[LabelInput], full_name: bool = False) -> dict[int, 
         except naming.LabelError as exc:
             errors[sid] = str(exc)
 
-    study_by_session: dict[tuple[str, str], set] = defaultdict(set)
     for item in inputs:
         if item.series_id in sessions:
             study_by_session[(subjects[item.series_id], sessions[item.series_id])].add(
@@ -219,7 +285,13 @@ def plan_labels(inputs: list[LabelInput], full_name: bool = False) -> dict[int, 
             errors[sid] = "session label clash: several studies with the same StudyDate/StudyTime"
 
     planned: dict[int, Planned] = {}
-    stems: dict[str, list[int]] = defaultdict(list)
+    # Stems are compared without case: Windows and macOS file systems do not tell them apart.
+    sharing: dict[str, list[int]] = defaultdict(list)  # stem -> all series, converted included
+    counters: dict[str, set[int]] = defaultdict(set)  # stem -> counters in use
+    for series in converted:
+        key = series.names.stem.casefold()
+        sharing[key].append(series.series_id)
+        counters[key].add(series.names.dup or 1)  # a bare name counts as the first
     for item in inputs:
         sid = item.series_id
         if sid in errors:
@@ -241,19 +313,32 @@ def plan_labels(inputs: list[LabelInput], full_name: bool = False) -> dict[int, 
         acq = naming.acq_label(text)
         stem = naming.file_stem(subjects[sid], sessions[sid], ser, suffix.value, acq)
         planned[sid] = Planned(
-            sid, subjects[sid], sessions[sid], stem, suffix, ser=ser, acq=acq, acq_source=acq_source
+            sid,
+            subjects[sid],
+            sessions[sid],
+            stem,
+            suffix,
+            ser=ser,
+            acq=acq,
+            acq_source=acq_source,
+            patient_id=item.patient_id or "",
+            subject_base=bases[sid],
         )
-        stems[stem].append(sid)
-    # Same name (e.g. a repeated SeriesDescription + SeriesNumber): number them in manifest order.
-    for ids in stems.values():
-        if len(ids) > 1:
-            ids = sorted(ids)
+        sharing[stem.casefold()].append(sid)
+    # Same name (e.g. a repeated SeriesDescription + SeriesNumber): number the new ones in
+    # manifest order; converted series keep the counter (or bare name) they have.
+    for key, ids in sharing.items():
+        new = sorted(sid for sid in ids if sid in planned)
+        if len(ids) > 1 and new:
+            for sid in new:
+                dup = next(n for n in count(1) if n not in counters[key])
+                counters[key].add(dup)
+                planned[sid] = replace(planned[sid], dup=dup)
             warning = (
                 f"duplicate name: series {_ids(ids)} map to the same name, "
-                f"numbered _01.._{len(ids):02d}"
+                f"numbered _01.._{max(counters[key]):02d}"
             )
-            for n, sid in enumerate(ids, start=1):
-                planned[sid] = replace(planned[sid], dup=n)
+            for sid in new:
                 warnings[sid].append(warning)
 
     for sid, messages in warnings.items():
@@ -687,10 +772,61 @@ def _subject_names(db, full_name: bool | None) -> bool:
     return wanted == manifest.FULL_NAMES
 
 
+_DUP_IN_NAME = re.compile(r"(_ser-\d+)_(\d{2,})(?=_)")
+
+
+def _stem_and_dup(nifti_path: str) -> tuple[str, int | None]:
+    """File stem (without counter and chunk) and ``_XX`` counter from an output path."""
+    name = re.sub(r"_chunk-\d+(?=_)", "", Path(nifti_path).name.removesuffix(NIFTI_SUFFIX))
+    match = _DUP_IN_NAME.search(name)
+    if match is None:
+        return name, None
+    return _DUP_IN_NAME.sub(r"\1", name, count=1), int(match[2])
+
+
+def _converted(db, root: Path, row, full_name: bool) -> Converted:
+    """The names of a converted series, from the manifest alone.
+
+    Series converted before the manifest stored all of them are completed once: stem and
+    counter from the output path, PatientID from the source header if that is still readable
+    (else it stays unknown and is tried again next time).
+    """
+    names = manifest.Names(
+        *(row[key] for key in ("subject", "session", "stem", "dup", "patient_id", "subject_base"))
+    )
+    if names.stem is not None and names.patient_id is not None:
+        return Converted(row["id"], names, row["study_instance_uid"])
+
+    stem, dup = names.stem, names.dup
+    if stem is None:
+        output = db.execute(
+            "SELECT nifti_path FROM outputs WHERE series_id = ? ORDER BY chunk", (row["id"],)
+        ).fetchone()
+        stem, dup = _stem_and_dup(output["nifti_path"])
+    # Without the header: the subject label minus a clash number (short labels have no digits).
+    base = names.subject_base or re.sub(r"\d+$", "", names.subject)
+    patient_id = names.patient_id
+    try:
+        header = read_label_input(row["id"], root / manifest.instance_paths(db, row["id"])[0])
+        patient_id = header.patient_id or ""
+        from_name = naming.subject_label(header.patient_name, full_name)
+        if re.fullmatch(re.escape(from_name) + r"\d*", names.subject):
+            base = from_name
+    except Exception:
+        pass  # source gone or unreadable: the series stays converted as it is
+    names = replace(names, stem=stem, dup=dup, patient_id=patient_id, subject_base=base)
+    with db:
+        manifest.set_names(db, row["id"], names)
+    return Converted(row["id"], names, row["study_instance_uid"])
+
+
 def convert_dataset(
     dataset: Path, progress: Progress = no_progress, full_name: bool | None = None
 ) -> list[Outcome]:
     """Convert every supported or split, not yet converted series in the dataset's manifest.
+
+    Converted series are never touched and their source is not needed again: the names they
+    were converted under come from the manifest.
 
     ``full_name=True`` builds subject labels from the full patient name; ``None`` keeps what
     the dataset uses already (5+5 letters unless it was started with full names).
@@ -701,25 +837,26 @@ def convert_dataset(
         _write_readme(dataset)
         root = manifest.source_root(db)
         rows = db.execute(
-            "SELECT id, source_dir, conversion_status, geometry, subject FROM series "
+            "SELECT id, source_dir, conversion_status, geometry, study_instance_uid, subject, "
+            "session, stem, dup, patient_id, subject_base FROM series "
             "WHERE status IN ('supported', 'split') ORDER BY id"
         ).fetchall()
-        inputs, outcomes = [], []
+        inputs, converted, outcomes = [], [], []
         for row in rows:
+            if row["conversion_status"] == "converted":
+                converted.append(_converted(db, root, row, full))
+                continue
             first = root / manifest.instance_paths(db, row["id"])[0]
-            converted = row["subject"] if row["conversion_status"] == "converted" else None
             try:
-                inputs.append(
-                    read_label_input(row["id"], first, _is_diffusion(row["geometry"]), converted)
-                )
+                inputs.append(read_label_input(row["id"], first, _is_diffusion(row["geometry"])))
             except Exception as exc:
                 manifest.record_failed(db, row["id"], f"cannot read header: {exc!r}")
                 outcomes.append(
                     Outcome(row["id"], False, f"cannot read header ({type(exc).__name__})")
                 )
-        plans = plan_labels(inputs, full)
+        plans = plan_labels(inputs, converted, full)
 
-        todo = [r for r in rows if r["id"] in plans and r["conversion_status"] != "converted"]
+        todo = [r for r in rows if r["id"] in plans]
         for row in progress(todo, total=len(todo), desc="Converting", unit="series"):
             sid = row["id"]
             plan = plans[sid]
@@ -740,7 +877,7 @@ def convert_dataset(
                     Outcome(sid, False, f"unexpected error ({type(exc).__name__}), see manifest")
                 )
                 continue
-            manifest.record_converted(db, sid, plan.subject, plan.session, outputs)
+            manifest.record_converted(db, sid, plan.names, outputs)
             outcomes.append(Outcome(sid, True, outputs=len(outputs), warning=plan.warning))
         return outcomes
     finally:

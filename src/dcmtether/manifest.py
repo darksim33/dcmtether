@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import astuple, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,7 +16,7 @@ from dcmtether import __version__
 from dcmtether.scan import ScanResult
 
 MANIFEST_NAME = "manifest.sqlite"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Version 1 as written by Phase 1; newer versions are reached via _UPGRADES only, so new
 # manifests and upgraded old ones always end up identical.
@@ -89,6 +89,14 @@ INSERT INTO outputs (series_id, chunk, nifti_path, tether_path, sidecar_path, n_
 ALTER TABLE series DROP COLUMN nifti_path;
 ALTER TABLE series DROP COLUMN tether_path;
 ALTER TABLE series DROP COLUMN sidecar_path;
+""",
+    # 3 → 4: the names a series was converted under, so later runs never rebuild them from the
+    # source (which may be gone) or from naming rules (which may have changed).
+    4: """
+ALTER TABLE series ADD COLUMN stem TEXT;          -- file stem without counter and chunk
+ALTER TABLE series ADD COLUMN dup INTEGER;        -- the _XX counter, NULL if none
+ALTER TABLE series ADD COLUMN patient_id TEXT;    -- '' if the header has none; NULL: unknown
+ALTER TABLE series ADD COLUMN subject_base TEXT;  -- subject label before clash numbering
 """,
 }
 
@@ -163,14 +171,43 @@ class Output:
     n_volumes: int
 
 
+@dataclass(frozen=True)
+class Names:
+    """The names a series is converted under. Once stored they are fixed: later runs read
+    them from here instead of rebuilding them."""
+
+    subject: str
+    session: str
+    #: File stem without counter and chunk.
+    stem: str
+    #: The ``_XX`` counter of series sharing a stem, if any.
+    dup: int | None
+    #: ``""`` if the header has none; ``None`` if unknown (converted by an older version and
+    #: the source could not be read since).
+    patient_id: str | None
+    #: Subject label before clash numbering (``PhantQa`` for ``PhantQa02``).
+    subject_base: str
+
+
+_NAME_COLUMNS = "subject, session, stem, dup, patient_id, subject_base"
+
+
+def set_names(db: sqlite3.Connection, series_id: int, names: Names) -> None:
+    db.execute(
+        f"UPDATE series SET ({_NAME_COLUMNS}) = (?, ?, ?, ?, ?, ?) WHERE id = ?",
+        (*astuple(names), series_id),
+    )
+
+
 def record_converted(
-    db: sqlite3.Connection, series_id: int, subject: str, session: str, outputs: list[Output]
+    db: sqlite3.Connection, series_id: int, names: Names, outputs: list[Output]
 ) -> None:
     with db:
+        set_names(db, series_id, names)
         db.execute(
-            """UPDATE series SET subject = ?, session = ?, conversion_status = 'converted',
-               conversion_error = NULL WHERE id = ?""",
-            (subject, session, series_id),
+            """UPDATE series SET conversion_status = 'converted', conversion_error = NULL
+               WHERE id = ?""",
+            (series_id,),
         )
         db.execute("DELETE FROM outputs WHERE series_id = ?", (series_id,))
         db.executemany(
@@ -184,12 +221,16 @@ def record_converted(
 
 
 def record_failed(db: sqlite3.Connection, series_id: int, error: str) -> None:
+    """Mark a series as failed. A converted series is left alone: its files exist, and nothing
+    that goes wrong later (e.g. an unreadable source) may take that record away."""
     with db:
-        db.execute(
-            "UPDATE series SET conversion_status = 'failed', conversion_error = ? WHERE id = ?",
+        updated = db.execute(
+            "UPDATE series SET conversion_status = 'failed', conversion_error = ? "
+            "WHERE id = ? AND conversion_status IS NOT 'converted'",
             (error, series_id),
         )
-        db.execute("DELETE FROM outputs WHERE series_id = ?", (series_id,))
+        if updated.rowcount:
+            db.execute("DELETE FROM outputs WHERE series_id = ?", (series_id,))
 
 
 def _relative(path: Path, root: Path) -> str:
