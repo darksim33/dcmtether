@@ -77,6 +77,11 @@ def load_metadata(path: Path) -> seg.SegMetadata | pmap.PmapMetadata:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise DerivedMRError(f"metadata is not readable JSON ({type(exc).__name__})") from None
+    return parse_metadata(data)
+
+
+def parse_metadata(data: dict) -> seg.SegMetadata | pmap.PmapMetadata:
+    """Check a loaded dcmqi SEG or parametric map template."""
     is_seg = isinstance(data, dict) and "segmentAttributes" in data
     is_pmap = isinstance(data, dict) and "QuantityValueCode" in data
     if is_seg == is_pmap:
