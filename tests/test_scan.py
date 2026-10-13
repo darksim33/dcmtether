@@ -151,6 +151,21 @@ def test_enhanced_4d_is_supported(tmp_path, kind, key, n_files):
     assert part.indices == [(k, v) for v in range(3) for k in range(5)]
 
 
+def test_enhanced_file_with_several_planes_is_unsupported(tmp_path):
+    # Frames of one file cannot go to different chunks (tether format), so no promise at scan.
+    series = make_enhanced(make_two_planes(sagittal_rows=6))
+    assert _unsupported(tmp_path, series) == [
+        "2 distinct image planes (orientation, matrix or pixel spacing)",
+        "several image planes in one multi-frame instance",
+    ]
+
+
+def test_enhanced_files_with_one_plane_each_are_split(tmp_path):
+    series = _only(_scan(tmp_path, make_enhanced(make_two_planes(sagittal_slices=4), n_files=2)))
+    assert series.status is Status.SPLIT, series.reasons
+    assert [len(p.instances) for p in series.parts] == [4, 4]
+
+
 def test_enhanced_without_functional_groups_is_unsupported(tmp_path):
     s = make_enhanced(make_series())
     for ds in s.datasets:

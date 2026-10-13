@@ -295,6 +295,9 @@ def test_4d_source_is_rejected(tmp_path):
         (lambda m: m.pop("MeasurementUnitsCode"), "MeasurementUnitsCode"),
         (lambda m: m.pop("SeriesNumber"), "SeriesNumber"),
         (lambda m: m["MeasurementUnitsCode"].pop("CodeMeaning"), "CodeMeaning"),
+        (lambda m: m.update(InstanceNumber="first"), "metadata: InstanceNumber is not an integer"),
+        (lambda m: m.update(InstanceNumber=[1]), "metadata: InstanceNumber is not an integer"),
+        (lambda m: m.update(QuantityValueCode="ADC"), "QuantityValueCode needs CodeValue"),
     ],
 )
 def test_bad_metadata_is_rejected(tmp_path, change, match):

@@ -281,3 +281,82 @@ def test_real_ge_adc_series_as_derived_mr(tmp_path, test_file):
     np.testing.assert_allclose(back.affine, nib.load(nifti).affine, atol=1e-3)
     expected = nib.load(tmp_path / "map.nii.gz").get_fdata()
     np.testing.assert_allclose(back.get_fdata(), expected, rtol=1e-6, atol=result.max_error + 1e-12)
+
+
+# --- old or damaged tether.json (all single-series commands) -----------------------------------
+
+
+def _set_version_1(doc):
+    doc["format_version"] = 1
+
+
+def _index_out_of_range(doc):
+    doc["instances"][0]["index"] = [99]
+
+
+def _index_used_twice(doc):
+    doc["instances"][1]["index"] = doc["instances"][0]["index"]
+
+
+def _index_not_a_number(doc):
+    doc["instances"][0]["index"] = ["first"]
+
+
+def _no_pixel(doc):
+    del doc["pixel"]
+
+
+def _no_instances(doc):
+    doc["instances"] = []
+
+
+def _instance_without_elements(doc):
+    del doc["instances"][0]["elements"]
+
+
+DAMAGED_TETHER = {
+    "version-1": (_set_version_1, "tether format version 1 is not supported"),
+    "broken-json": (None, "tether.json is not readable"),
+    "index-out-of-range": (_index_out_of_range, "instance indices do not match"),
+    "index-used-twice": (_index_used_twice, "instance indices do not match"),
+    "index-not-a-number": (_index_not_a_number, "not a tether document"),
+    "no-pixel": (_no_pixel, "not a tether document"),
+    "no-instances": (_no_instances, "not a tether document"),
+    "instance-without-elements": (_instance_without_elements, "not a tether document"),
+}
+
+
+@pytest.mark.parametrize("command", ["to-dcm", "to-seg", "to-pmap", "to-mr"])
+@pytest.mark.parametrize("damage", DAMAGED_TETHER.values(), ids=DAMAGED_TETHER.keys())
+def test_damaged_tether_json_is_a_one_line_error(tmp_path, command, damage):
+    change, message = damage
+    nifti, _ = _source(tmp_path, make_series())
+    _float_map(nifti, tmp_path / "map.nii.gz")
+    _labels(nifti, tmp_path / "labels.nii.gz")
+    tether_path = nifti.with_name(nifti.name.removesuffix(".nii.gz") + ".tether.json")
+    if change is None:
+        tether_path.write_text(tether_path.read_text("utf-8")[:200], "utf-8")
+    else:
+        doc = json.loads(tether_path.read_text("utf-8"))
+        change(doc)
+        tether_path.write_text(json.dumps(doc), "utf-8")
+    seg_meta = tmp_path / "seg.json"
+    seg_meta.write_text(json.dumps(SEG_META), "utf-8")
+    pmap_meta = tmp_path / "pmap.json"
+    pmap_meta.write_text(json.dumps(PMAP_META), "utf-8")
+    args = {
+        "to-dcm": [tmp_path / "out"],
+        "to-seg": [tmp_path / "labels.nii.gz", seg_meta, tmp_path / "seg.dcm"],
+        "to-pmap": [tmp_path / "map.nii.gz", pmap_meta, tmp_path / "pm.dcm"],
+        "to-mr": [tmp_path / "map.nii.gz", pmap_meta, tmp_path / "out"],
+    }[command]
+
+    result = CliRunner().invoke(main, [command, str(nifti), *map(str, args)])
+
+    assert isinstance(result.exception, SystemExit), repr(result.exception)  # no traceback
+    assert result.exit_code == 1
+    [line] = result.output.splitlines()
+    assert line.startswith("Error: ") and message in line
+    assert "sub-" not in line and "Synth" not in line and "IM_0" not in line
+    assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+    assert not (tmp_path / "seg.dcm").exists() and not (tmp_path / "pm.dcm").exists()

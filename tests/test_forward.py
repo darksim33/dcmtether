@@ -802,6 +802,19 @@ def test_enhanced_tether_lists_frames(tmp_path):
     assert all("index" not in i for i in doc["instances"])
 
 
+def test_enhanced_files_with_one_plane_each_become_chunks(tmp_path):
+    series = make_enhanced(make_two_planes(sagittal_slices=4), n_files=2)
+    dataset = _dataset(tmp_path, series)
+    outcomes = convert_dataset(dataset)
+    assert [(o.ok, o.outputs) for o in outcomes] == [(True, 2)], [o.message for o in outcomes]
+
+
+def test_enhanced_file_with_several_planes_is_not_converted(tmp_path):
+    dataset = _dataset(tmp_path, make_enhanced(make_two_planes(sagittal_rows=6)))
+    assert convert_dataset(dataset) == []  # unsupported at scan: nothing to attempt
+    assert [r["status"] for r in _manifest_rows(dataset)] == ["unsupported"]
+
+
 def test_enhanced_sidecar_uses_functional_groups(tmp_path):
     dataset = _dataset(tmp_path, make_enhanced(make_4d(kind="echo")))
     convert_dataset(dataset)

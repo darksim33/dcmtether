@@ -407,6 +407,18 @@ def test_bad_label_values_are_rejected(tmp_path, written):
         ),
         (lambda m: m["segmentAttributes"][0][0].update(SegmentAlgorithmType="GUESS"), "GUESS"),
         (lambda m: m["segmentAttributes"][0][0].pop("SegmentAlgorithmName"), "AlgorithmName"),
+        (lambda m: m.update(InstanceNumber="first"), "metadata: InstanceNumber is not an integer"),
+        (lambda m: m["segmentAttributes"][0].__setitem__(1, "tumor"), "segment 2: not an object"),
+        (lambda m: m["segmentAttributes"].__setitem__(0, {"labelID": 1}), "lists no segments"),
+        *(
+            (
+                lambda m, rgb=rgb: m["segmentAttributes"][0][1].update(
+                    recommendedDisplayRGBValue=rgb
+                ),
+                "segment 2: recommendedDisplayRGBValue must be three integers 0-255",
+            )
+            for rgb in ("red", 255, [255, 0], [255, 0, "x"], [0.5, 0, 0], [256, 0, 0], [None] * 3)
+        ),
     ],
 )
 def test_bad_metadata_is_rejected(tmp_path, written, change, match):

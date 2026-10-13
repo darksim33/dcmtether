@@ -365,10 +365,14 @@ def make_4d(
     return SyntheticSeries(spec, datasets, volume.astype(parts[0].volume.dtype), affine, series_uid)
 
 
-def make_two_planes(seed: int = 0) -> SyntheticSeries:
+def make_two_planes(
+    seed: int = 0, sagittal_slices: int = 3, sagittal_rows: int = 7
+) -> SyntheticSeries:
     """An axial stack (4 slices) and a sagittal stack (3 slices) in one series."""
     axial = make_series(SeriesSpec(n_slices=4, seed=seed))
-    sagittal = make_series(SeriesSpec(n_slices=3, orientation=SAGITTAL, rows=7, seed=seed))
+    sagittal = make_series(
+        SeriesSpec(n_slices=sagittal_slices, orientation=SAGITTAL, rows=sagittal_rows, seed=seed)
+    )
     series_uid = synthetic_uid("two-planes", seed)
     datasets = []
     for number, ds in enumerate([*axial.datasets, *sagittal.datasets], start=1):
@@ -453,8 +457,8 @@ def make_enhanced(classic: SyntheticSeries, n_files: int = 1) -> SyntheticSeries
 
     Frames are in InstanceNumber order of ``classic`` (volume by volume), split evenly over the
     files. Geometry, rescale, echo time, temporal position and diffusion move into functional
-    groups (pixel measures and orientation shared, the rest per frame). ``volume`` and
-    ``affine_lps`` are those of ``classic``.
+    groups (pixel measures and orientation shared, the rest per frame; orientation per frame
+    if it differs within a file). ``volume`` and ``affine_lps`` are those of ``classic``.
     """
     images = sorted(classic.datasets, key=lambda ds: ds.InstanceNumber)
     if len(images) % n_files:
@@ -480,11 +484,18 @@ def make_enhanced(classic: SyntheticSeries, n_files: int = 1) -> SyntheticSeries
         shared.PixelMeasuresSequence = _item(
             PixelSpacing=first.PixelSpacing, SliceThickness=first.SliceThickness
         )
-        shared.PlaneOrientationSequence = _item(
-            ImageOrientationPatient=first.ImageOrientationPatient
-        )
+        per_frame = [_frame_groups(fr) for fr in frames]
+        if len({tuple(fr.ImageOrientationPatient) for fr in frames}) == 1:
+            shared.PlaneOrientationSequence = _item(
+                ImageOrientationPatient=first.ImageOrientationPatient
+            )
+        else:
+            for groups, fr in zip(per_frame, frames, strict=True):
+                groups.PlaneOrientationSequence = _item(
+                    ImageOrientationPatient=fr.ImageOrientationPatient
+                )
         ds.SharedFunctionalGroupsSequence = PydicomSequence([shared])
-        ds.PerFrameFunctionalGroupsSequence = PydicomSequence([_frame_groups(fr) for fr in frames])
+        ds.PerFrameFunctionalGroupsSequence = PydicomSequence(per_frame)
         ds.PixelData = b"".join(fr.PixelData for fr in frames)
         datasets.append(ds)
     return replace(classic, datasets=datasets)
