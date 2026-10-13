@@ -10,6 +10,7 @@ stored in the manifest.
 |---|---|
 | MR Image Storage, one regular stack | equal orientation, matrix, pixel spacing; even slice spacing (0.01 mm tolerance) |
 | 4D series (multi-echo, diffusion, dynamics) | volumes at identical positions, told apart by EchoNumbers, TemporalPositionIdentifier/Index, DiffusionBValue + gradient, AcquisitionNumber, EffectiveEchoTime, ComplexImageComponent, EchoTime, InversionTime or TriggerTime (or a combination) |
+| Diffusion maps calculated by the scanner (ADC, eADC, FA, trace-weighted) | stored in `dwi/` with their own suffix; colour FA maps are not converted |
 | Classic diffusion with b-values only in private tags | Siemens, GE, Philips vendor tags (see [formats](formats.md#sidecar-stemjson)) |
 | Series with several image planes (localizers) | one NIfTI per plane (`chunk-<n>`) if every plane is a regular stack |
 | Enhanced MR (multi-frame) | geometry and per-frame values from the functional groups; one series may span several files |

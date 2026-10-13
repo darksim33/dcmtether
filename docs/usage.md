@@ -19,7 +19,7 @@ your tool ──▶ label map / ADC map on the NIfTI grid
 
 ## Converting
 
-### `run SOURCE [--output/-o DATASET] [--verbose]`
+### `run SOURCE [--output/-o DATASET] [--full-name/-f] [--verbose/-v]`
 
 Scans SOURCE (headers only) and converts every convertible series into DATASET, which is SOURCE
 itself unless `--output` names another directory. In-place, the dataset's own top-level entries
@@ -29,9 +29,18 @@ yet are rescanned, failed ones are retried. Converted series are never touched; 
 files changed, that is reported (delete their outputs and manifest entry to redo them). A
 different SOURCE for an existing dataset is refused. `--verbose` lists every series.
 
+`--full-name` builds subject labels from the full family, given and middle name, digits
+included (`sub-MuellerThomas`, `sub-Phantom2Qa`), instead of the first 5 letters of family and
+given name (`sub-MuellThoma`, `sub-PhantQa`). Use it when names differ only after the fifth
+letter, in a number or in the middle name; with short labels such patients are numbered as a
+label clash. The choice is fixed for a dataset on
+its first conversion: later runs keep it without the option, and it is refused for a dataset
+already converted with short labels. Full names make paths longer (mind the Windows path
+limit). Short options combine: `run SOURCE -fv`.
+
 Exit code 1 if any series failed.
 
-### `scan SOURCE DATASET` and `to-nii DATASET [--verbose]`
+### `scan SOURCE DATASET` and `to-nii DATASET [--full-name/-f] [--verbose/-v]`
 
 The two halves of `run`: `scan` creates the manifest (and refuses an existing one), `to-nii`
 converts what the manifest marks `supported` or `split`.

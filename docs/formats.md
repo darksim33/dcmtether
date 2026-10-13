@@ -11,7 +11,7 @@ dataset/
     ├── anat/<stem>.nii.gz          voxels (raw stored values, closest RAS)
     ├── anat/<stem>.json            human-readable sidecar (BIDS-style keys)
     ├── anat/<stem>.tether.json     everything needed to rebuild the DICOM
-    └── dwi/<stem>.*                the same for diffusion series
+    └── dwi/<stem>.*                the same for diffusion series and maps
 ```
 
 ## File names
@@ -21,13 +21,18 @@ BIDS-inspired, not BIDS-compliant:
 
 | Entity | Content |
 |---|---|
-| `sub-` | first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase) — **identifies the patient** |
+| `sub-` | first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase), or family + given + middle name in full, digits included, with `--full-name` (one form per dataset) — **identifies the patient** |
 | `ses-` | StudyDate `YYYYMMDD`; `THHMM` from StudyTime only when one subject has several studies that day |
 | `acq-` | SeriesDescription (else ProtocolName) reduced to letters/digits, camelCase, ≤24 chars |
 | `ser-` | SeriesNumber, at least two digits |
 | `_XX` | counter `01`, `02`, … only for series that would otherwise share a name (e.g. same SeriesDescription and SeriesNumber), in manifest order |
 | `chunk-` | one per image plane when a series holds several (e.g. localizers), InstanceNumber order |
-| suffix | `dwi` for diffusion; else `T1w`/`T2w`/`PDw`/`FLAIR` from keywords in the `acq-` text or from TR/TE/TI; else `MR` |
+| suffix | `dwi` for diffusion series; `ADC`/`eADC`/`FA`/`TRACE` for diffusion maps calculated by the scanner; else `T1w`/`T2w`/`PDw`/`FLAIR` from keywords in the `acq-` text or from TR/TE/TI; else `MR` |
+
+Diffusion maps are recognised by an ImageType value (`ADC`, `EADC`, `FA`, `TRACEW`, `TRACE`),
+else by keywords in the `acq-` text (`adc`, `apparent diffusion`, `trace`, `tracew`,
+`fractional anisotropy`; a bare `fa` only next to `dti`, `dwi`, `diff` or `tensor`, because it
+also means flip angle). They are stored in `dwi/`. A text naming several maps is not used.
 
 Name clashes are never resolved silently:
 
@@ -90,7 +95,7 @@ listed unconverted under `PerVolume.DiffusionGradientVendor` instead of
 
 | Table | Content |
 |---|---|
-| `meta` | schema/tool version, source root, scan time |
+| `meta` | schema/tool version, source root, scan time, `subject_names` (`brief`/`full`, set on the first conversion) |
 | `series` | one row per SeriesInstanceUID: id, status (`supported`/`split`/`unsupported`), reasons, equipment, geometry summary, subject/session labels, conversion status and error |
 | `instances` | one row per file (path relative to the source root) |
 | `outputs` | one row per NIfTI: series id, chunk, NIfTI/tether/sidecar paths, number of volumes |
