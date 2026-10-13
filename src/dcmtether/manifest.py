@@ -132,6 +132,23 @@ def source_root(db: sqlite3.Connection) -> Path:
     return Path(db.execute("SELECT value FROM meta WHERE key = 'source_root'").fetchone()[0])
 
 
+#: ``meta.subject_names``: subject labels from 5+5 letters of the name, or from the full name.
+BRIEF_NAMES = "brief"
+FULL_NAMES = "full"
+
+
+def subject_names(db: sqlite3.Connection) -> str | None:
+    """How the dataset builds subject labels; ``None`` until its first conversion."""
+    row = db.execute("SELECT value FROM meta WHERE key = 'subject_names'").fetchone()
+    return row[0] if row else None
+
+
+def set_subject_names(db: sqlite3.Connection, value: str) -> None:
+    with db:
+        db.execute("DELETE FROM meta WHERE key = 'subject_names'")
+        db.execute("INSERT INTO meta (key, value) VALUES ('subject_names', ?)", (value,))
+
+
 def instance_paths(db: sqlite3.Connection, series_id: int) -> list[str]:
     rows = db.execute("SELECT path FROM instances WHERE series_id = ? ORDER BY path", (series_id,))
     return [r[0] for r in rows]

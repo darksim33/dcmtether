@@ -49,6 +49,7 @@ class LabelInput:
     repetition_time: float | None
     echo_time: float | None
     inversion_time: float | None
+    image_type: tuple[str, ...] = ()
     #: The scan found diffusion volumes (from the manifest geometry, not the header).
     diffusion: bool = False
     #: Subject label the series was converted under (manifest), if converted already.
@@ -78,7 +79,8 @@ class Planned:
 
     @property
     def datatype(self) -> str:
-        return DWI_DIR if self.suffix == DWI_SUFFIX else DATATYPE_DIR
+        diffusion = self.suffix == DWI_SUFFIX or self.suffix.value in naming.DIFFUSION_MAP_SUFFIXES
+        return DWI_DIR if diffusion else DATATYPE_DIR
 
     def stem_for(self, chunk: int | None) -> str:
         return naming.file_stem(
@@ -100,6 +102,9 @@ def read_label_input(
     with quiet_pydicom():
         ds = pydicom.dcmread(path, stop_before_pixels=True)
         series_number = ds.get("SeriesNumber")
+        image_type = ds.get("ImageType") or ()
+        if isinstance(image_type, str):
+            image_type = (image_type,)
         return LabelInput(
             series_id=series_id,
             patient_id=str(ds.get("PatientID", "")) or None,
@@ -113,6 +118,7 @@ def read_label_input(
             repetition_time=_float(ds, "RepetitionTime"),
             echo_time=_float(ds, "EchoTime"),
             inversion_time=_float(ds, "InversionTime"),
+            image_type=tuple(str(v) for v in image_type),
             diffusion=diffusion,
             converted_subject=converted_subject,
         )
@@ -164,13 +170,16 @@ def _number_subjects(inputs: list[LabelInput], subjects: dict[int, str]) -> dict
     return warnings
 
 
-def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
-    """Subject/session labels and file stems for all series, with clash detection."""
+def plan_labels(inputs: list[LabelInput], full_name: bool = False) -> dict[int, Planned]:
+    """Subject/session labels and file stems for all series, with clash detection.
+
+    ``full_name``: subject labels from the full patient name instead of 5+5 letters.
+    """
     errors: dict[int, str] = {}
     subjects: dict[int, str] = {}
     for item in inputs:
         try:
-            subjects[item.series_id] = naming.subject_label(item.patient_name)
+            subjects[item.series_id] = naming.subject_label(item.patient_name, full_name)
         except naming.LabelError as exc:
             errors[item.series_id] = str(exc)
 
@@ -223,7 +232,8 @@ def plan_labels(inputs: list[LabelInput]) -> dict[int, Planned]:
         suffix = (
             DWI_SUFFIX
             if item.diffusion
-            else naming.contrast_suffix(
+            else naming.diffusion_map_suffix(item.image_type, text)
+            or naming.contrast_suffix(
                 text, item.repetition_time, item.echo_time, item.inversion_time
             )
         )
@@ -610,7 +620,7 @@ it as is. Research use only.
     sub-<subject>/ses-<session>/anat/<stem>.nii.gz       voxels (raw stored values, closest RAS)
     sub-<subject>/ses-<session>/anat/<stem>.json         human-readable sidecar (BIDS-style keys)
     sub-<subject>/ses-<session>/anat/<stem>.tether.json  everything needed to rebuild the DICOM
-    sub-<subject>/ses-<session>/dwi/<stem>.*             the same for diffusion series
+    sub-<subject>/ses-<session>/dwi/<stem>.*             the same for diffusion series and maps
     manifest.sqlite                                      scan and conversion records
     logs/dcmtether.jsonl                                 structured log (ids and counts only)
 
@@ -622,7 +632,8 @@ coordinates and are listed unconverted as `DiffusionGradientVendor`.
 
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
-- `sub-`: first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase).
+- `sub-`: first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase), or
+  the full family + given name if the dataset was started with `--full-name`.
   Different PatientIDs with the same label (e.g. phantoms, study codes as names) are numbered
   `01`, `02`, ... in manifest order (`sub-PhantQa01`); a converted patient keeps its label.
 - `ses-`: StudyDate `YYYYMMDD`; `THHMM` from StudyTime is appended only when one subject has
@@ -634,9 +645,10 @@ coordinates and are listed unconverted as `DiffusionGradientVendor`.
   manifest order, recorded in the sidecar under `DcmTether.Duplicate`.
 - `chunk-`: one per image plane when a series holds several (e.g. localizers), numbered in
   InstanceNumber order.
-- suffix: `dwi` for diffusion series; else `T1w`, `T2w`, `PDw`, `FLAIR` from keywords in the
-  same text as `acq-`, or from TR/TE/TI, else `MR`; the rule used is recorded in the sidecar
-  under `DcmTether.SuffixRule`.
+- suffix: `dwi` for diffusion series; `ADC`, `eADC`, `FA`, `TRACE` for diffusion maps calculated
+  by the scanner (from ImageType, else keywords; stored in `dwi/`); else `T1w`, `T2w`, `PDw`,
+  `FLAIR` from keywords in the same text as `acq-`, or from TR/TE/TI, else `MR`; the rule used
+  is recorded in the sidecar under `DcmTether.SuffixRule`.
 """
 
 
@@ -654,11 +666,37 @@ def _is_diffusion(geometry_json: str) -> bool:
     return any("DiffusionBValue" in key for key in keys)
 
 
-def convert_dataset(dataset: Path, progress: Progress = no_progress) -> list[Outcome]:
-    """Convert every supported or split, not yet converted series in the dataset's manifest."""
+def _subject_names(db, full_name: bool | None) -> bool:
+    """Settle how this dataset builds subject labels (stored in the manifest): one dataset
+    never mixes both forms, or a patient would end up in two subject folders."""
+    stored = manifest.subject_names(db)
+    current = stored or manifest.BRIEF_NAMES
+    wanted = manifest.FULL_NAMES if full_name else current
+    if wanted != current:
+        converted = db.execute(
+            "SELECT 1 FROM series WHERE conversion_status = 'converted' LIMIT 1"
+        ).fetchone()
+        if converted:
+            raise manifest.ManifestError(
+                "this dataset uses short subject labels; --full-name cannot be added later"
+            )
+    if wanted != stored:
+        manifest.set_subject_names(db, wanted)
+    return wanted == manifest.FULL_NAMES
+
+
+def convert_dataset(
+    dataset: Path, progress: Progress = no_progress, full_name: bool | None = None
+) -> list[Outcome]:
+    """Convert every supported or split, not yet converted series in the dataset's manifest.
+
+    ``full_name=True`` builds subject labels from the full patient name; ``None`` keeps what
+    the dataset uses already (5+5 letters unless it was started with full names).
+    """
     db = manifest.open_manifest(dataset)
-    _write_readme(dataset)
     try:
+        full = _subject_names(db, full_name)
+        _write_readme(dataset)
         root = manifest.source_root(db)
         rows = db.execute(
             "SELECT id, source_dir, conversion_status, geometry, subject FROM series "
@@ -677,7 +715,7 @@ def convert_dataset(dataset: Path, progress: Progress = no_progress) -> list[Out
                 outcomes.append(
                     Outcome(row["id"], False, f"cannot read header ({type(exc).__name__})")
                 )
-        plans = plan_labels(inputs)
+        plans = plan_labels(inputs, full)
 
         todo = [r for r in rows if r["id"] in plans and r["conversion_status"] != "converted"]
         for row in progress(todo, total=len(todo), desc="Converting", unit="series"):

@@ -1,6 +1,6 @@
 """BIDS-inspired file names (PLAN.md §2, "Naming").
 
-    sub-<Family5><Given5>_ses-<YYYYMMDD[THHMM]>[_acq-<desc>]_ser-<NN>[_<XX>]_<suffix>
+    sub-<Family5><Given5 | FamilyGiven>_ses-<YYYYMMDD[THHMM]>[_acq-<desc>]_ser-<NN>[_<XX>]_<suffix>
 
 (No body-part entity, by decision of 2026-10-07; BodyPartExamined stays in manifest/sidecar.)
 
@@ -39,17 +39,19 @@ def _ascii_letters(text: str) -> str:
     return "".join(c for c in _fold(text) if c.isalpha())
 
 
-def _name_part(text: str) -> str:
-    letters = _ascii_letters(text)[:NAME_PART_LENGTH]
+def _name_part(text: str, length: int | None = NAME_PART_LENGTH) -> str:
+    letters = _ascii_letters(text)[:length]
     return letters[:1].upper() + letters[1:].lower()
 
 
-def subject_label(patient_name: str | PersonName | None) -> str:
-    """``MÜLLER^THOMAS`` → ``MuellThoma`` (first 5 letters of family and given name)."""
+def subject_label(patient_name: str | PersonName | None, full: bool = False) -> str:
+    """``MÜLLER^THOMAS`` → ``MuellThoma`` (first 5 letters of family and given name), or
+    ``MuellerThomas`` with ``full``."""
     if patient_name is None:
         raise LabelError("PatientName is missing")
     name = patient_name if isinstance(patient_name, PersonName) else PersonName(patient_name)
-    label = _name_part(name.family_name) + _name_part(name.given_name)
+    length = None if full else NAME_PART_LENGTH
+    label = _name_part(name.family_name, length) + _name_part(name.given_name, length)
     if not label:
         raise LabelError("PatientName has no usable letters")
     return label
@@ -151,6 +153,44 @@ def contrast_suffix(
         if tr >= 2000 and te <= 40:
             return Suffix("PDw", "parameters:TR/TE")
     return Suffix("MR", "fallback")
+
+
+#: Suffixes of scanner-calculated diffusion maps; they are stored next to the diffusion series.
+DIFFUSION_MAP_SUFFIXES = frozenset({"ADC", "eADC", "FA", "TRACE"})
+
+_MAP_IMAGE_TYPES = {"ADC": "ADC", "EADC": "eADC", "FA": "FA", "TRACEW": "TRACE", "TRACE": "TRACE"}
+_END = r"(?![a-z0-9])"
+_MAP_KEYWORDS = [
+    ("ADC", re.compile(rf"{_START}adc{_END}|apparent[\s_-]?diffusion", re.I)),
+    ("TRACE", re.compile(rf"{_START}tracew?{_END}", re.I)),
+    ("FA", re.compile(r"fractional[\s_-]?anisotropy", re.I)),
+]
+# A bare "fa" is also a flip angle ("t1_fa15", "vibe_fa_2"): it needs a diffusion word next to it.
+_FA_TOKEN = re.compile(rf"{_START}fa{_END}", re.I)
+_DIFFUSION_WORD = re.compile(r"dti|dwi|diff|tensor", re.I)
+
+
+def diffusion_map_suffix(image_type: tuple[str, ...], text: str | None) -> Suffix | None:
+    """ADC / eADC / FA / TRACE for a scanner-calculated diffusion map, else ``None``.
+
+    ImageType values win over keywords in ``text`` (see :func:`naming_text`). Several different
+    maps named at once are ambiguous and give ``None``.
+    """
+    values = [v.upper() for v in image_type]
+    hits = {v: _MAP_IMAGE_TYPES[v] for v in values if v in _MAP_IMAGE_TYPES}
+    if hits:
+        if len(set(hits.values())) > 1:
+            return None
+        value, suffix = next(iter(hits.items()))
+        return Suffix(suffix, f"imagetype:{value.lower()}")
+
+    text = text or ""
+    found = [suffix for suffix, pattern in _MAP_KEYWORDS if pattern.search(text)]
+    if "FA" not in found and _FA_TOKEN.search(text) and _DIFFUSION_WORD.search(text):
+        found.append("FA")
+    if len(found) == 1:
+        return Suffix(found[0], f"keyword:{found[0].lower()}")
+    return None
 
 
 def series_label(series_number: int | None) -> str:

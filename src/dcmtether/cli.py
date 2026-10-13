@@ -44,6 +44,13 @@ _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
 _output_dir = click.Path(file_okay=False, path_type=Path)
 _verbose = click.option("--verbose", "-v", is_flag=True, help="Also list every series.")
+_full_name = click.option(
+    "--full-name",
+    "-f",
+    is_flag=True,
+    help="Use the full patient name in subject labels instead of 5+5 letters; fixed for a "
+    "dataset on its first conversion.",
+)
 
 
 def _progress(iterable: Iterable, **kwargs) -> Iterable:
@@ -165,8 +172,9 @@ def scan(source: Path, dataset: Path) -> None:
 
 @main.command("to-nii")
 @click.argument("dataset", type=_existing_dir)
+@_full_name
 @_verbose
-def to_nii(dataset: Path, verbose: bool) -> None:
+def to_nii(dataset: Path, full_name: bool, verbose: bool) -> None:
     """Convert scanned series in DATASET to NIfTI + tether.json.
 
     Converts every 'supported' or 'split' series not converted yet; failed ones are retried.
@@ -175,7 +183,7 @@ def to_nii(dataset: Path, verbose: bool) -> None:
     has_manifest = manifest_path(dataset).exists()
     with _logged(dataset if has_manifest else None, "to-nii") as logger:
         try:
-            outcomes = convert_dataset(dataset, progress=_progress)
+            outcomes = convert_dataset(dataset, _progress, full_name or None)
         except ManifestError as exc:
             raise click.ClickException(str(exc)) from None
         failed = _report_conversion(outcomes, logger, verbose)
@@ -192,8 +200,9 @@ def to_nii(dataset: Path, verbose: bool) -> None:
     type=_output_dir,
     help="Dataset directory (default: SOURCE itself).",
 )
+@_full_name
 @_verbose
-def run(source: Path, dataset: Path | None, verbose: bool) -> None:
+def run(source: Path, dataset: Path | None, full_name: bool, verbose: bool) -> None:
     """Scan SOURCE and convert it into a dataset; safe to run again.
 
     The dataset is written into SOURCE unless --output names another directory. The first run
@@ -241,7 +250,11 @@ def run(source: Path, dataset: Path | None, verbose: bool) -> None:
             )
         for series_id in missing:
             click.echo(f"  series #{series_id}: no longer found in SOURCE (kept in the manifest)")
-        failed = _report_conversion(convert_dataset(dataset, progress=_progress), logger, verbose)
+        try:
+            outcomes = convert_dataset(dataset, _progress, full_name or None)
+        except ManifestError as exc:
+            raise click.ClickException(str(exc)) from None
+        failed = _report_conversion(outcomes, logger, verbose)
     if failed:
         raise click.exceptions.Exit(1)
 
