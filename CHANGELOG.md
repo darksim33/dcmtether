@@ -47,7 +47,10 @@ First release. Research use only — not for clinical or diagnostic use.
   digits included (`sub-MuellerThomas`) instead of 5+5 letters (`sub-MuellThoma`); fixed per dataset.
 - Name clashes are numbered and reported as warnings, never resolved silently:
   - Different PatientIDs with the same subject label get `sub-<label>01`, `02`, ….
-  - Series that would share a file name get `_01`, `_02`, … after `ser-`.
+  - Series that would share a file name get `_01`, `_02`, … after `ser-`. Names that differ
+    only in upper/lower case count as the same.
+- Converted series are fixed: their names are stored in the manifest, so later runs neither
+  need their source files again nor rename them.
 - Manifest (`manifest.sqlite`), a dataset README, and a structured JSON-lines log
   (`logs/dcmtether.jsonl`) holding ids, keywords and counts only.
 - Console output never names patients, UIDs or paths; series are named by manifest id.

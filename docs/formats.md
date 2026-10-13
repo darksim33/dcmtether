@@ -40,9 +40,15 @@ Name clashes are never resolved silently:
   PatientName) get a two-digit number appended, `sub-PhantQa01`, `sub-PhantQa02`, …, in the
   manifest order of each patient's first series, reported as a warning. A patient converted
   before the clash appeared keeps its label; its number is not reused.
-- Series sharing a file name are numbered (`_XX`) and reported as a warning.
+- Series sharing a file name are numbered (`_XX`) and reported as a warning. Names that
+  differ only in upper/lower case count as the same name.
 - Session label clashes (several studies of one subject with the same StudyDate and StudyTime)
   make the affected series fail with a reason.
+
+A converted series keeps its names for good. They are stored in the manifest, so later runs
+do not need its source files again and do not rename it when naming rules change. Series
+that join a name later get the next free `_XX`; a series converted without a counter keeps
+its bare name and counts as the first.
 
 ## NIfTI
 
@@ -91,17 +97,17 @@ the vendor private tags, found by private creator:
 listed unconverted under `PerVolume.DiffusionGradientVendor` instead of
 `DiffusionGradientOrientation`. GE values are used only when the gradient tags are present too.
 
-## Manifest (`manifest.sqlite`, schema 3)
+## Manifest (`manifest.sqlite`, schema 4)
 
 | Table | Content |
 |---|---|
 | `meta` | schema/tool version, source root, scan time, `subject_names` (`brief`/`full`, set on the first conversion) |
-| `series` | one row per SeriesInstanceUID: id, status (`supported`/`split`/`unsupported`), reasons, equipment, geometry summary, subject/session labels, conversion status and error |
+| `series` | one row per SeriesInstanceUID: id, status (`supported`/`split`/`unsupported`), reasons, equipment, geometry summary, conversion status and error, and the names it was converted under (subject and session labels, file stem, `_XX` counter, PatientID, subject label before clash numbering) |
 | `instances` | one row per file (path relative to the source root) |
 | `outputs` | one row per NIfTI: series id, chunk, NIfTI/tether/sidecar paths, number of volumes |
 | `skipped_files` | files that are not DICOM images, with the reason |
 
-The manifest holds UIDs and source paths: it is as sensitive as the DICOM headers.
+Older manifests are upgraded in place when opened. The manifest holds UIDs, PatientIDs and source paths: it is as sensitive as the DICOM headers.
 
 ## Log
 
