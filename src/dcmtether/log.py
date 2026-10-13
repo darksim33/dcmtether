@@ -10,10 +10,13 @@ refused, so new code cannot start logging values by accident.
 
 import json
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from dcmtether import __version__
+from dcmtether.errors import DcmtetherError
 from dcmtether.manifest import MANIFEST_NAME
 
 LOG_DIR = "logs"
@@ -108,3 +111,22 @@ class DatasetLog:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, sort_keys=False) + "\n")
+
+
+@contextmanager
+def logged(dataset: Path | None, command: str, new_file: bool = False) -> Iterator[DatasetLog]:
+    """start/end records around a command; a :class:`DcmtetherError` is recorded as ``error``.
+
+    ``new_file``: the command starts its own log file (``run``, ``scan``, ``to-nii``).
+    ``logger.end_fields`` are added to the end record.
+    """
+    logger = DatasetLog(dataset, command, new_file)
+    logger.end_fields = {}
+    logger.event("start")
+    try:
+        yield logger
+    except DcmtetherError as exc:
+        logger.event("error", reason=str(exc))
+        raise
+    finally:
+        logger.event("end", **logger.end_fields)

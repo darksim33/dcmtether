@@ -18,6 +18,7 @@ from pydicom.valuerep import DS, IS, PN_DELIMS, TEXT_VR_DELIMS
 
 from dcmtether import __version__
 from dcmtether._quiet import quiet_pydicom
+from dcmtether.errors import DcmtetherError
 
 FORMAT_VERSION = 3
 #: v2 documents (no multi-frame ``frames``) are a subset of v3 and still readable.
@@ -45,7 +46,7 @@ SINGLE_VALUE_VRS = frozenset({"LT", "ST", "UR", "UT"})
 _CONVERTED_ON_READ = frozenset({0x00080005})  # SpecificCharacterSet
 
 
-class TetherError(ValueError):
+class TetherError(DcmtetherError, ValueError):
     """The header cannot be stored losslessly. Messages never contain element values."""
 
 
