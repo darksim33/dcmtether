@@ -69,7 +69,7 @@ def test_series_uid_is_unique(tmp_path, scanned):
 def test_existing_manifest_is_never_overwritten(tmp_path, scanned):
     path = write_manifest(tmp_path / "dataset", scanned)
     before = path.read_bytes()
-    with pytest.raises(FileExistsError):
+    with pytest.raises(FileExistsError, match=r"^manifest already exists in DATASET$"):
         write_manifest(tmp_path / "dataset", scanned)
     assert path.read_bytes() == before
 

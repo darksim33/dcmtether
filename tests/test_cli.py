@@ -88,7 +88,24 @@ def test_scan_refuses_existing_manifest(runner, tmp_path):
     assert runner.invoke(main, args).exit_code == 0
     result = runner.invoke(main, args)
     assert result.exit_code == 1
-    assert "manifest already exists" in result.output
+    assert result.output == "Error: manifest already exists in DATASET\n"
+
+
+def test_output_never_names_the_dataset_folder(runner, tmp_path):
+    # The folder name may identify a patient or study (PHI rules).
+    write_series(make_series(), tmp_path / "src" / "a")
+    dataset = tmp_path / "Mueller_Thomas_study"
+    outputs = [
+        runner.invoke(main, ["to-nii", str(tmp_path / "src")]).output,  # no manifest
+        runner.invoke(main, ["scan", str(tmp_path / "src"), str(dataset)]).output,
+        runner.invoke(main, ["scan", str(tmp_path / "src"), str(dataset)]).output,  # exists
+        runner.invoke(main, ["to-nii", str(dataset)]).output,
+        runner.invoke(main, ["run", str(tmp_path / "src"), "-o", str(dataset)]).output,
+    ]
+    assert outputs[0] == "Error: no manifest in DATASET (run 'dcmtether scan' first)\n"
+    assert outputs[1].splitlines()[-1] == "Manifest written."
+    for output in outputs:
+        assert "Mueller" not in output and tmp_path.name not in output
 
 
 def test_scan_skips_dataset_inside_source(runner, tmp_path):

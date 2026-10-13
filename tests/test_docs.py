@@ -29,9 +29,11 @@ def test_example_templates_are_valid(name, parser):
 def test_documented_log_fields_exist():
     formats = (DOCS / "formats.md").read_text("utf-8")
     section = formats.split("## Log", 1)[1]
-    for field in re.findall(r"`([a-z_]+)`", section.split("Events:", 1)[0]):
-        if field not in {"logs", "dcmtether"}:
-            assert field in log.ALLOWED_FIELDS, field
+    fields = section.split("Fields", 1)[1].split("Events:", 1)[0]  # after the file names
+    documented = re.findall(r"`([a-z_]+)`", fields)
+    assert len(documented) > 10
+    for field in documented:
+        assert field in log.ALLOWED_FIELDS, field
 
 
 def test_readme_links_exist():

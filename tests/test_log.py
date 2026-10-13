@@ -1,6 +1,7 @@
 """Phase 6: structured JSON-lines log in the dataset (no PHI: ids, keywords and counts only)."""
 
 import json
+import re
 from pathlib import Path
 
 import nibabel as nib
@@ -18,15 +19,24 @@ from dcmtether.cli import main
 SECRETS = ("Synthetic", "Phantom", "SYNTH-", "2.25.", "20260101", "sub-", "IM_0", "/")
 
 
+def _log_files(dataset: Path) -> list[Path]:
+    """Oldest first."""
+    return log.log_files(dataset)
+
+
 def _records(dataset: Path) -> list[dict]:
-    lines = (dataset / "logs" / "dcmtether.jsonl").read_text("utf-8").splitlines()
-    return [json.loads(line) for line in lines]
+    return [
+        json.loads(line)
+        for path in _log_files(dataset)
+        for line in path.read_text("utf-8").splitlines()
+    ]
 
 
 def _assert_no_phi(dataset: Path) -> None:
-    text = (dataset / "logs" / "dcmtether.jsonl").read_text("utf-8")
-    for secret in SECRETS:
-        assert secret not in text, secret
+    for path in _log_files(dataset):
+        text = path.read_text("utf-8")
+        for secret in SECRETS:
+            assert secret not in text, secret
 
 
 @pytest.fixture
@@ -66,12 +76,48 @@ def test_log_contains_no_identifying_values(dataset):
     _assert_no_phi(dataset)
 
 
-def test_log_appends_across_commands(dataset, tmp_path):
-    n_before = len(_records(dataset))
+def test_log_file_name_has_a_timestamp(dataset):
+    [path] = _log_files(dataset)
+    assert re.fullmatch(r"dcmtether_\d{8}T\d{6}\.jsonl", path.name)
+
+
+def _commands(path: Path) -> set[str]:
+    return {json.loads(line)["command"] for line in path.read_text("utf-8").splitlines()}
+
+
+def test_run_scan_and_to_nii_each_start_a_log_file(dataset, tmp_path):
     CliRunner().invoke(main, ["to-nii", str(dataset)])
-    records = _records(dataset)
-    assert len(records) > n_before
-    assert records[-1]["command"] == "to-nii"
+    CliRunner().invoke(main, ["run", str(tmp_path / "src"), "-o", str(dataset)])
+    files = _log_files(dataset)
+    assert len(files) == 3  # also within one second: the names never collide
+    assert [_commands(f) for f in files] == [{"run"}, {"to-nii"}, {"run"}]
+
+    CliRunner().invoke(main, ["scan", str(tmp_path / "src"), str(tmp_path / "other")])
+    [scan_log] = _log_files(tmp_path / "other")
+    assert scan_log.name.startswith("dcmtether_")
+
+
+def test_single_series_commands_append_to_the_newest_log_file(dataset, tmp_path):
+    CliRunner().invoke(main, ["to-nii", str(dataset)])
+    older, newest = _log_files(dataset)
+    before = older.read_text("utf-8")
+    nifti = dataset / output_rows(dataset)[0]["nifti_path"]
+    CliRunner().invoke(main, ["to-dcm", str(nifti), str(tmp_path / "rebuilt")])
+    assert _log_files(dataset) == [older, newest]
+    assert older.read_text("utf-8") == before
+    assert json.loads(newest.read_text("utf-8").splitlines()[-1])["command"] == "to-dcm"
+
+
+def test_old_log_file_is_left_alone(dataset, tmp_path):
+    [path] = _log_files(dataset)
+    old = path.with_name("dcmtether.jsonl")  # as written before the names had a timestamp
+    path.rename(old)
+    before = old.read_text("utf-8")
+    nifti = dataset / output_rows(dataset)[0]["nifti_path"]
+    CliRunner().invoke(main, ["to-dcm", str(nifti), str(tmp_path / "rebuilt")])
+    assert old.read_text("utf-8") == before
+    assert len(_log_files(dataset)) == 2  # a new, timestamped one was started
+    assert _log_files(dataset)[0] == old  # and the old one counts as the oldest
 
 
 def test_scan_logs_classification(tmp_path):

@@ -337,3 +337,97 @@ def test_names_that_differ_only_in_case_are_numbered(tmp_path):
         "sub-SynthPhant_ses-20260101_acq-sagT1_ser-01_01_T1w.nii.gz",
     ]
     assert "duplicate name: series #1, #2 map to the same name" in result.output
+
+
+# --- in-place runs: what belongs to the dataset (FIX_PLAN finding 5) ---------------------------
+
+
+def _in_place(source: Path, command: str = "run"):
+    args = ["run", str(source)] if command == "run" else ["scan", str(source), str(source)]
+    return CliRunner().invoke(main, args)
+
+
+@pytest.mark.parametrize("command", ["run", "scan"])
+def test_first_in_place_run_refuses_source_folders_named_like_subjects(tmp_path, command):
+    src = tmp_path / "src"
+    write_series(_series(1), src / "sub-01" / "a")
+    write_series(_series(2), src / "sub-02")
+    write_series(_series(3), src / "other")
+    before = sorted(src.rglob("*"))
+    result = _in_place(src, command)
+    assert result.exit_code == 1
+    assert result.output == "Error: SOURCE already has sub-* folders (2); use --output\n"
+    assert sorted(src.rglob("*")) == before  # nothing written
+
+    result = _run(src, tmp_path / "dataset")  # elsewhere they are ordinary source folders
+    assert result.exit_code == 0, result.output
+    assert "Converted 3 series, 0 failed." in result.output
+
+
+def test_first_in_place_run_reads_a_source_folder_named_logs(tmp_path):
+    src = tmp_path / "src"
+    write_series(_series(1), src / "logs")
+    write_series(_series(2), src / "logs" / "deeper")
+    (src / "README.md").write_text("mine", "utf-8")
+    result = _in_place(src)
+    assert result.exit_code == 0, result.output
+    assert "Scanned 10 files: 10 DICOM instances in 2 series, 0 files skipped." in result.output
+    assert "Converted 2 series, 0 failed." in result.output
+    assert (src / "README.md").read_text("utf-8") == "mine"
+
+    result = _in_place(src)  # the log files next to the DICOM files are not source files
+    assert "Scanned 10 files: 10 DICOM instances in 2 series, 0 files skipped." in result.output
+    assert "Manifest: 0 new series, 0 rescanned, 2 unchanged." in result.output
+    assert len(list((src / "logs").glob("dcmtether_*.jsonl"))) == 2
+
+
+def test_later_in_place_runs_skip_the_subject_folders(tmp_path):
+    src = tmp_path / "src"
+    write_series(_series(1), src / "a")
+    assert _in_place(src).exit_code == 0
+    assert any(src.glob("sub-*"))
+    result = _in_place(src)
+    assert result.exit_code == 0, result.output
+    assert "Scanned 5 files: 5 DICOM instances in 1 series, 0 files skipped." in result.output
+
+
+# --- a path that changes its series (FIX_PLAN finding 9) ---------------------------------------
+
+
+def _replace_folder(folder: Path, series) -> None:
+    shutil.rmtree(folder)
+    write_series(series, folder)
+
+
+def test_file_of_an_unconverted_series_replaced_by_a_new_series(tmp_path):
+    src, dataset = tmp_path / "src", tmp_path / "dataset"
+    write_series(_series(1), src / "a")
+    write_series(_series(2), src / "b")
+    write_manifest(dataset, scan(src))  # nothing converted yet
+    _replace_folder(src / "a", _series(3, seed=3))  # same file names, another series
+    shutil.copy(src / "a" / "IM_0001", src / "b" / "IM_0001")  # and one file inside series 2
+
+    update = update_manifest(dataset, scan(src))
+
+    assert (update.new, update.rescanned, update.missing) == ([3], [2], [1])
+    with sqlite3.connect(dataset / "manifest.sqlite") as db:
+        counts = dict(db.execute("SELECT series_id, COUNT(*) FROM instances GROUP BY 1"))
+    assert counts == {2: 4, 3: 6}  # series 1 lost the paths that are no longer its files
+
+
+def test_file_of_a_converted_series_replaced_by_another_series(tmp_path):
+    src, dataset = tmp_path / "src", tmp_path / "dataset"
+    write_series(_series(1), src / "a")
+    assert _run(src, dataset).exit_code == 0
+    _replace_folder(src / "a", _series(2, seed=2))
+    before = manifest_rows(dataset)
+
+    result = _run(src, dataset)
+
+    assert isinstance(result.exception, SystemExit), repr(result.exception)
+    assert result.exit_code == 1
+    assert result.output.splitlines()[-1] == (
+        "Error: a source file of converted series #1 now belongs to a new series (restore "
+        "it, or remove the outputs and manifest entry of series #1)"
+    )
+    assert manifest_rows(dataset) == before  # rolled back

@@ -647,7 +647,8 @@ def test_cli_to_nii_reports_duplicate_names_as_warning(tmp_path):
     assert result.exit_code == 0
     assert "Converted 2 series, 0 failed." in result.output
     assert "series #1 warning: duplicate name: series #1, #2" in result.output
-    log = (dataset / "logs" / "dcmtether.jsonl").read_text("utf-8")
+    [log_file] = (dataset / "logs").glob("dcmtether_*.jsonl")
+    log = log_file.read_text("utf-8")
     assert '"series_warning"' in log
 
 

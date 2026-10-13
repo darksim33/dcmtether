@@ -360,3 +360,45 @@ def test_damaged_tether_json_is_a_one_line_error(tmp_path, command, damage):
     assert "sub-" not in line and "Synth" not in line and "IM_0" not in line
     assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
     assert not (tmp_path / "seg.dcm").exists() and not (tmp_path / "pm.dcm").exists()
+
+
+def test_failed_write_leaves_nothing_behind(tmp_path, monkeypatch):
+    nifti, _ = _source(tmp_path, make_series())
+    _float_map(nifti, tmp_path / "map.nii.gz")
+    meta = derived_mr.load_metadata(_metadata(tmp_path, PMAP_META))
+    save_as = pydicom.Dataset.save_as
+    calls = []
+
+    def failing(self, path, *args, **kwargs):
+        calls.append(path)
+        save_as(self, path, *args, **kwargs)
+        if len(calls) == 3:
+            raise OSError("disk full")  # after the file was created
+
+    monkeypatch.setattr(pydicom.Dataset, "save_as", failing)
+    with pytest.raises(OSError, match="disk full"):
+        derived_mr.to_derived_mr(nifti, tmp_path / "map.nii.gz", meta, tmp_path / "out")
+    assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_integer_map_with_long_slope_is_reported_as_rounded_not_quantized(tmp_path):
+    nifti, _ = _source(tmp_path, make_series())
+    i, j, k = np.indices(nib.load(nifti).shape[:3])
+    stored = (60000 + i + 10 * j + 100 * k).astype(np.uint16)
+    # a float32 slope: its exact value does not fit a 16-character DS
+    _save(nifti, stored, tmp_path / "map.nii.gz", scaling=(np.float32(1 / 3), 0.0))
+    args = [
+        "to-mr",
+        str(nifti),
+        str(tmp_path / "map.nii.gz"),
+        str(_metadata(tmp_path, PMAP_META)),
+        str(tmp_path / "out"),
+    ]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[1].startswith("Rescale rounded to DS precision: max error ")
+    assert "uantized" not in result.output
+    comments = pydicom.dcmread(tmp_path / "out" / "MR_0001.dcm").ImageComments
+    assert "rescale rounded to DS precision, max error " in comments
+    assert "quantized" not in comments
