@@ -511,6 +511,7 @@ _SIDECAR_KEYWORDS = [  # (DICOM keyword, BIDS key, scale)
     ("RescaleSlope", "RescaleSlope", None),
     ("RescaleIntercept", "RescaleIntercept", None),
 ]
+_SIDECAR_KEYS = {keyword: (key, scale) for keyword, key, scale in _SIDECAR_KEYWORDS}
 
 
 def _plain(value):
@@ -571,7 +572,8 @@ def sidecar(
     ``datasets`` are the images (classic datasets or enhanced frame views, see
     :mod:`dcmtether.frames`). Values come from the first image of each volume; values that
     differ between volumes go to ``DcmTether.PerVolume`` (one entry per volume) instead of the
-    top level.
+    top level. ``PerVolume`` follows the same key and unit rules as the top level (times in
+    seconds), also for the volume-key attributes; ``VolumeKey`` names the DICOM keywords.
     """
     firsts: dict[int, pydicom.Dataset] = {}
     for ds, index in zip(datasets, indices, strict=True):
@@ -582,7 +584,8 @@ def sidecar(
     diffusion_source = None
     with quiet_pydicom():
         for keyword in volume_key:
-            per_volume[keyword] = [_sidecar_value(ds, keyword, None) for ds in volumes]
+            key, scale = _SIDECAR_KEYS.get(keyword, (keyword, None))
+            per_volume.setdefault(key, [_sidecar_value(ds, keyword, scale) for ds in volumes])
         if "DiffusionBValue" in volume_key:
             diffusion_source = _private_diffusion(volumes, per_volume)
         for keyword, key, scale in _SIDECAR_KEYWORDS:
