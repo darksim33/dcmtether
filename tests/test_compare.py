@@ -12,7 +12,7 @@ from pydicom.valuerep import DS
 from synthetic import SeriesSpec, compressed, make_series, write_series
 
 from dcmtether.cli import main
-from dcmtether.compare import compare_files, compare_series, dicom_files
+from dcmtether.comparison import compare_files, compare_series, dicom_files
 
 SECRETS = ("Synthetic", "Phantom", "SYNTH", "2.25.", "20260101", "IM_0")
 

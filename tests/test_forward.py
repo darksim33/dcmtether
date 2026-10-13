@@ -26,7 +26,7 @@ from dcmtether import orientation
 from dcmtether.cli import main
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import ManifestError, update_manifest, write_manifest
-from dcmtether.scan import scan
+from dcmtether.scanning import scan
 
 # Synthetic defaults: PatientName "Synthetic^Phantom", StudyDate 20260101, description
 # "SYNTHETIC", TR 500 / TE 15 → T1w by parameters.

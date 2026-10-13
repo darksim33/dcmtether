@@ -1,10 +1,12 @@
 """The user documentation stays in sync with the code."""
 
+import inspect
 import re
 from pathlib import Path
 
 import pytest
 
+import dcmtether
 from dcmtether import log, pmap, seg
 from dcmtether.cli import main
 
@@ -34,6 +36,17 @@ def test_documented_log_fields_exist():
     assert len(documented) > 10
     for field in documented:
         assert field in log.ALLOWED_FIELDS, field
+
+
+def test_api_page_documents_every_public_name():
+    text = (DOCS / "api.md").read_text("utf-8")
+    documented = set(re.findall(r"`([A-Za-z_]+)[`(]", text))
+    assert set(dcmtether.__all__) <= documented, set(dcmtether.__all__) - documented
+    # and the signatures shown are the real ones
+    for name, shown in re.findall(r"^### `(\w+)\((.*?)\)`", text, flags=re.M):
+        parameters = list(inspect.signature(getattr(dcmtether, name)).parameters)
+        public = [p for p in parameters if not p.startswith("_")]
+        assert re.findall(r"(\w+)(?:=[^,]*)?(?:,|$)", shown.replace("*, ", "")) == public, name
 
 
 def test_readme_links_exist():

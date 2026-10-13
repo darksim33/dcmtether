@@ -4,7 +4,7 @@ from synthetic import make_4d, make_series, write_series
 from dcmtether.cli import main
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import write_manifest
-from dcmtether.scan import scan
+from dcmtether.scanning import scan
 
 
 class Recorder:

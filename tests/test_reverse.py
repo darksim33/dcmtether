@@ -35,11 +35,11 @@ from synthetic import (
 
 from dcmtether import tether
 from dcmtether.cli import main
-from dcmtether.compare import compare_series, dicom_files
+from dcmtether.comparison import compare_series, dicom_files
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import write_manifest
 from dcmtether.reverse import ReverseError, to_dicom
-from dcmtether.scan import scan
+from dcmtether.scanning import scan
 
 
 def _assert_identical(report) -> None:

@@ -11,11 +11,11 @@ import pytest
 import testdata
 from roundtrip import output_rows
 
-from dcmtether.compare import compare_series, dicom_files
+from dcmtether.comparison import compare_series, dicom_files
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import write_manifest
 from dcmtether.reverse import to_dicom
-from dcmtether.scan import Status, scan
+from dcmtether.scanning import Status, scan
 
 
 def test_manifest_is_pinned():

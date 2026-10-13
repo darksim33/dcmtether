@@ -19,7 +19,7 @@ from dcmtether import __version__, derived_mr
 from dcmtether.cli import main
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import write_manifest
-from dcmtether.scan import Status, scan
+from dcmtether.scanning import Status, scan
 
 
 def _source(tmp_path: Path, series) -> tuple[Path, Path]:

@@ -7,7 +7,7 @@ from synthetic import SeriesSpec, make_localizer, make_series, write_series
 
 from dcmtether import __version__, manifest
 from dcmtether.manifest import MANIFEST_NAME, SCHEMA_VERSION, write_manifest
-from dcmtether.scan import scan
+from dcmtether.scanning import scan
 
 
 @pytest.fixture

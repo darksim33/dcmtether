@@ -12,11 +12,11 @@ from synthetic import (
     rotated,
 )
 
-from dcmtether.compare import Report, compare_series, dicom_files
+from dcmtether.comparison import Report, compare_series, dicom_files
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import write_manifest
 from dcmtether.reverse import to_dicom
-from dcmtether.scan import scan
+from dcmtether.scanning import scan
 
 #: Geometry variants every conversion test runs over.
 SPECS = {

@@ -13,7 +13,7 @@ from dcmtether import naming
 from dcmtether.cli import main
 from dcmtether.forward import convert_dataset
 from dcmtether.manifest import ManifestError, update_manifest, write_manifest
-from dcmtether.scan import scan
+from dcmtether.scanning import scan
 
 
 def _run(source: Path, dataset: Path, *extra: str):

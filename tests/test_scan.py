@@ -25,8 +25,8 @@ from synthetic import (
     write_series,
 )
 
-from dcmtether import scan as scan_module
-from dcmtether.scan import Status, scan
+from dcmtether import scanning as scan_module
+from dcmtether.scanning import Status, scan
 
 SPECS_OBLIQUE = SeriesSpec(orientation=rotated(CORONAL, (1.0, 1.0, 0.0), 17.0))
 
