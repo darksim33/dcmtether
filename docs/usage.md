@@ -4,6 +4,8 @@ All commands: `uv run dcmtether --help`, `uv run dcmtether COMMAND --help`. Outp
 patient names, UIDs or file paths; series are named by their **manifest id** (`series #3`).
 Existing files are never overwritten. Research use only.
 
+Every command is also a Python function with the same behaviour: see [Python API](api.md).
+
 ## Workflow
 
 ```

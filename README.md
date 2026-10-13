@@ -16,7 +16,18 @@ uv run dcmtether to-dcm DATASET/sub-…/….nii.gz rebuilt/  # back to identical
 uv run dcmtether to-seg NIFTI labels.nii.gz seg-template.json seg.dcm
 ```
 
+The same from Python ([API](docs/api.md)):
+
+```python
+import dcmtether as dt
+
+result = dt.run("/path/to/dicom", "/path/to/dataset")
+print(result.converted, result.failed)  # manifest ids
+dt.to_dcm("dataset/sub-…/….nii.gz", "rebuilt/")
+```
+
 - [Usage](docs/usage.md): workflow and every command.
+- [Python API](docs/api.md): the commands as functions.
 - [Formats](docs/formats.md): dataset layout, file names, `*.tether.json`, sidecar, manifest, log.
 - [Supported inputs](docs/supported-inputs.md): what converts, what does not, and why.
 - Example metadata templates: [`docs/examples/`](docs/examples/).

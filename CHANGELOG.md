@@ -17,6 +17,9 @@ First release. Research use only — not for clinical or diagnostic use.
   stay stable, new series are added, series not converted yet are rescanned and failed ones
   retried; converted series are never touched. The dataset defaults to SOURCE itself.
 - `scan SOURCE DATASET` and `to-nii DATASET`: the two halves of `run`.
+- Python API: every command as a function (`dcmtether.run`, `scan`, `to_nii`, `to_dcm`,
+  `compare`, `to_seg`, `to_pmap`, `to_mr`) returning result objects, with one base class
+  for errors (`DcmtetherError`) and `log=False` to skip the dataset log. See `docs/api.md`.
 - Header-only scan that classifies every series as `supported`, `split` or `unsupported`,
   always with a reason; nothing is converted "best effort".
 - DICOM → NIfTI conversion: raw stored values, closest-RAS reorientation without resampling,
