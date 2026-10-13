@@ -20,8 +20,9 @@ from nibabel.volumeutils import array_to_file
 
 from dcmtether import __version__, diffusion, frames, manifest, naming, orientation, tether
 from dcmtether._quiet import quiet_pydicom
+from dcmtether.errors import DcmtetherError
 from dcmtether.progress import Progress, no_progress
-from dcmtether.scan import Part, Series, Status, classify, read_instances
+from dcmtether.scanning import Part, Series, Status, classify, read_instances
 
 DATATYPE_DIR = "anat"
 DWI_DIR = "dwi"
@@ -30,7 +31,7 @@ _NIFTI1_DATA_OFFSET = 352
 SIDECAR_SUFFIX = ".json"
 
 
-class ConversionError(RuntimeError):
+class ConversionError(DcmtetherError, RuntimeError):
     """Expected failure with a safe (value-free) message."""
 
 

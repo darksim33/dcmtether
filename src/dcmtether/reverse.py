@@ -13,12 +13,13 @@ from pydicom.uid import UID, ExplicitVRBigEndian, ExplicitVRLittleEndian
 
 from dcmtether import forward, frames, orientation, tether
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES, POSITION_TOL_MM
+from dcmtether.errors import DcmtetherError
+from dcmtether.scanning import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES, POSITION_TOL_MM
 
 PARTIAL_SUFFIX = ".partial"
 
 
-class ReverseError(RuntimeError):
+class ReverseError(DcmtetherError, RuntimeError):
     """Expected failure with a safe (value-free) message."""
 
 

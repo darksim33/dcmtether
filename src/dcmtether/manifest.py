@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from dcmtether import __version__
-from dcmtether.scan import ScanResult
+from dcmtether.errors import DcmtetherError
+from dcmtether.scanning import ScanResult
 
 MANIFEST_NAME = "manifest.sqlite"
 SCHEMA_VERSION = 4
@@ -101,7 +102,7 @@ ALTER TABLE series ADD COLUMN subject_base TEXT;  -- subject label before clash 
 }
 
 
-class ManifestError(RuntimeError):
+class ManifestError(DcmtetherError, RuntimeError):
     pass
 
 

@@ -19,7 +19,8 @@ from pydicom.sr.coding import Code
 
 from dcmtether import orientation, reverse, tether, uids
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import ORIENTATION_TOL, POSITION_TOL_MM
+from dcmtether.errors import DcmtetherError
+from dcmtether.scanning import ORIENTATION_TOL, POSITION_TOL_MM
 
 #: Marks every derived object (PLAN.md §2, research labeling).
 RESEARCH_LABEL = "RESEARCH USE ONLY"
@@ -32,7 +33,7 @@ EQUIPMENT = {
 _LO_MAX = 64
 
 
-class DerivedError(ValueError):
+class DerivedError(DcmtetherError, ValueError):
     """Expected failure with a safe (value-free) message."""
 
 

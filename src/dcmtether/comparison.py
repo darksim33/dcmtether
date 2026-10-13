@@ -21,7 +21,7 @@ from pydicom.errors import InvalidDicomError
 from pydicom.uid import UID, ExplicitVRLittleEndian
 
 from dcmtether._quiet import quiet_pydicom
-from dcmtether.scan import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES
+from dcmtether.scanning import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES
 from dcmtether.tether import element_name
 
 PIXEL_DATA = 0x7FE00010
