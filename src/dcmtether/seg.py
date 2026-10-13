@@ -27,6 +27,7 @@ from dcmtether.derived import (
     load_source,
     series_description,
     template_code,
+    template_instance_number,
     uids_for,
     write,
 )
@@ -70,6 +71,8 @@ class SegMetadata:
 
 def _segment(entry: dict, n: int) -> Segment:
     where = f"segment {n}"
+    if not isinstance(entry, dict):
+        raise SegError(f"{where}: not an object")
     try:
         label_id = int(entry["labelID"])
     except (KeyError, TypeError, ValueError):
@@ -89,8 +92,12 @@ def _segment(entry: dict, n: int) -> Segment:
     if algorithm_type != "MANUAL" and not algorithm_name:
         raise SegError(f"{where}: SegmentAlgorithmName is needed for {algorithm_type}")
     rgb = entry.get("recommendedDisplayRGBValue")
-    if rgb is not None and (len(rgb) != 3 or not all(0 <= int(v) <= 255 for v in rgb)):
-        raise SegError(f"{where}: recommendedDisplayRGBValue must be three values 0-255")
+    if rgb is not None and not (
+        isinstance(rgb, list)
+        and len(rgb) == 3
+        and all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 255 for v in rgb)
+    ):
+        raise SegError(f"{where}: recommendedDisplayRGBValue must be three integers 0-255")
     family = template_code(entry, "SegmentAlgorithmFamilyCodeSequence", where, required=False)
     return Segment(
         label_id=label_id,
@@ -105,7 +112,7 @@ def _segment(entry: dict, n: int) -> Segment:
             entry, "SegmentedPropertyTypeModifierCodeSequence", where, required=False
         ),
         anatomic_region=template_code(entry, "AnatomicRegionSequence", where, required=False),
-        rgb=tuple(int(v) for v in rgb) if rgb is not None else None,
+        rgb=tuple(rgb) if rgb is not None else None,
     )
 
 
@@ -130,7 +137,7 @@ def parse_metadata(data: dict) -> SegMetadata:
     content_label = str(data.get("ContentLabel") or "SEGMENTATION").upper()
     return SegMetadata(
         series_number=series_number,
-        instance_number=int(data.get("InstanceNumber") or 1),
+        instance_number=template_instance_number(data),
         series_description=str(data.get("SeriesDescription") or "Segmentation"),
         content_creator_name=data.get("ContentCreatorName") or None,
         content_label=content_label[:16],

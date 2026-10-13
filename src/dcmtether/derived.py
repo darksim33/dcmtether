@@ -17,7 +17,7 @@ import numpy as np
 import pydicom
 from pydicom.sr.coding import Code
 
-from dcmtether import orientation, reverse, uids
+from dcmtether import orientation, reverse, tether, uids
 from dcmtether._quiet import quiet_pydicom
 from dcmtether.scan import ORIENTATION_TOL, POSITION_TOL_MM
 
@@ -53,6 +53,17 @@ def template_code(entry: dict, key: str, where: str, required: bool = True) -> C
         raise DerivedError(
             f"{where}: {key} needs CodeValue, CodingSchemeDesignator and CodeMeaning"
         ) from None
+
+
+def template_instance_number(data: dict) -> int:
+    """``InstanceNumber`` of a dcmqi template (default 1)."""
+    value = data.get("InstanceNumber") or 1
+    try:
+        if isinstance(value, bool) or not isinstance(value, int | str):
+            raise ValueError
+        return int(value)
+    except ValueError:
+        raise DerivedError("metadata: InstanceNumber is not an integer") from None
 
 
 def series_description(description: str) -> str:
@@ -134,7 +145,7 @@ def load_source(source_nifti: Path) -> Source:
     """Rebuild the source images of a converted NIfTI (checked against its tether.json)."""
     try:
         document, datasets = reverse.rebuild(source_nifti)
-    except reverse.ReverseError as exc:
+    except (reverse.ReverseError, tether.TetherError) as exc:
         raise DerivedError(f"source: {exc}") from None
     originals, slices = _ordered(document, datasets)
     with quiet_pydicom():

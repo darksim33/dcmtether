@@ -671,6 +671,10 @@ def classify(series: Series) -> None:
                 Status.SPLIT,
                 f"{len(planes)} distinct image planes (orientation, matrix or pixel spacing)",
             )
+            files = Counter(path for plane in planes for path in {i.path for i in plane})
+            if max(files.values()) > 1:
+                # Chunks are whole files: frames of one file cannot go to different chunks.
+                findings.add(Status.UNSUPPORTED, "several image planes in one multi-frame instance")
         part_geometry = []
         for n, plane in enumerate(planes, start=1):
             plane_findings = _Findings()

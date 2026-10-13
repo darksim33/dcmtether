@@ -287,8 +287,60 @@ def write(document: dict, path: Path) -> None:
     path.write_text(text + "\n", encoding="utf-8")
 
 
+def _is_index(value) -> bool:
+    return (
+        isinstance(value, list)
+        and 1 <= len(value) <= 2
+        and all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in value)
+    )
+
+
+def _is_document(document: dict) -> bool:
+    """Whether ``document`` has the parts every reader relies on (not: valid DICOM JSON)."""
+    try:
+        source, pixel, instances = document["source"], document["pixel"], document["instances"]
+        shape = pixel["shape_dicom"]
+        ornt = pixel["orientation"]["ornt_transform"]
+        return (
+            all(isinstance(document[key], dict) for key in ("file_meta", "shared"))
+            and isinstance(document["original_strings"], dict)
+            and all(
+                isinstance(source[key], str)
+                for key in ("series_instance_uid", "sop_class_uid", "transfer_syntax_uid")
+            )
+            and all(isinstance(pixel[key], str) for key in ("dtype", "pixel_data_vr"))
+            and isinstance(shape, list)
+            and len(shape) in (3, 4)
+            and all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in shape)
+            and np.asarray(ornt, dtype=float).shape == (3, 2)
+            and isinstance(instances, list)
+            and len(instances) > 0
+            and all(
+                isinstance(i["file_name"], str)
+                and all(
+                    isinstance(i[key], dict)
+                    for key in ("file_meta", "elements", "original_strings")
+                )
+                and (
+                    isinstance(i["frames"], list)
+                    and len(i["frames"]) > 0
+                    and all(_is_index(index) for index in i["frames"])
+                    if "frames" in i
+                    else _is_index(i["index"])
+                )
+                for i in instances
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def load(path: Path) -> dict:
-    document = json.loads(path.read_text(encoding="utf-8"))
+    """Read a tether document; :class:`TetherError` if it is unreadable, foreign or too old."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise TetherError("tether.json is not readable") from None
     if not isinstance(document, dict) or "format_version" not in document:
         raise TetherError("not a tether document")
     version = document["format_version"]
@@ -297,6 +349,8 @@ def load(path: Path) -> dict:
             f"tether format version {version} is not supported (expected {FORMAT_VERSION}); "
             "re-run to-nii"
         )
+    if not _is_document(document):
+        raise TetherError("not a tether document")
     return document
 
 
@@ -305,10 +359,16 @@ def rebuild_datasets(document: dict) -> list[Dataset]:
     datasets = []
     with quiet_pydicom():
         for instance in document["instances"]:
-            ds = Dataset.from_json({**document["shared"], **instance["elements"]})
-            ds.file_meta = FileMetaDataset(
-                Dataset.from_json({**document["file_meta"], **instance["file_meta"]})
-            )
-            _apply_strings(ds, {**document["original_strings"], **instance["original_strings"]})
+            try:
+                ds = Dataset.from_json({**document["shared"], **instance["elements"]})
+                ds.file_meta = FileMetaDataset(
+                    Dataset.from_json({**document["file_meta"], **instance["file_meta"]})
+                )
+                _apply_strings(ds, {**document["original_strings"], **instance["original_strings"]})
+            except TetherError:
+                raise
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                # Damaged by hand or by a transfer; the values must not reach the message.
+                raise TetherError("tether.json does not hold valid DICOM JSON") from None
             datasets.append(ds)
     return datasets

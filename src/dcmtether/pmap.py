@@ -27,6 +27,7 @@ from dcmtether.derived import (
     load_source,
     series_description,
     template_code,
+    template_instance_number,
     uids_for,
     write,
 )
@@ -64,7 +65,7 @@ def parse_metadata(data: dict) -> PmapMetadata:
         units=template_code(data, "MeasurementUnitsCode", "metadata"),
         method=template_code(data, "MeasurementMethodCode", "metadata", required=False),
         series_number=series_number,
-        instance_number=int(data.get("InstanceNumber") or 1),
+        instance_number=template_instance_number(data),
         series_description=str(data.get("SeriesDescription") or "Parametric map"),
         content_creator_name=data.get("ContentCreatorName") or None,
         content_label=str(data.get("ContentLabel") or "PARAMETRICMAP").upper()[:16],

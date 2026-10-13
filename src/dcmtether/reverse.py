@@ -74,7 +74,13 @@ def _dicom_order_volume(
     if data.shape != tuple(expected_shape):
         raise ReverseError("NIfTI shape does not match the tether.json")
 
-    if any(len(index) != len(shape_dicom) - 2 for index in indices):
+    extent = shape_dicom[2:]  # slices(, volumes): every position exactly once
+    if (
+        any(len(index) != len(extent) for index in indices)
+        or any(not 0 <= i < n for index in indices for i, n in zip(index, extent, strict=True))
+        or len(set(indices)) != len(indices)
+        or len(indices) != int(np.prod(extent))
+    ):
         raise ReverseError("instance indices do not match the volume shape in the tether.json")
     with quiet_pydicom():
         stack = forward.first_volume(images, indices)
