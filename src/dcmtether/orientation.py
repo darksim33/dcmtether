@@ -1,4 +1,4 @@
-"""Geometry: DICOM-order volume ↔ closest-RAS NIfTI (axis permutation/flip only, PLAN.md §2).
+"""Geometry: DICOM-order volume ↔ closest-RAS NIfTI (axis permutation/flip only).
 
 "DICOM order" means array axes (row index i, column index j, slice k), with slices sorted by
 ascending position along the slice normal ``cross(row_dir, col_dir)``. This is the order of

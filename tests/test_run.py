@@ -1,4 +1,4 @@
-"""Phase 6: `dcmtether run SOURCE DATASET` (scan + to-nii, rerunnable) and manifest updates."""
+"""`dcmtether run SOURCE [-o DATASET]` (scan + to-nii, rerunnable) and manifest updates."""
 
 import shutil
 import sqlite3
@@ -193,7 +193,7 @@ def test_full_name_is_refused_for_a_short_label_dataset(tmp_path):
     assert "Synth" not in result.output
 
 
-# --- converted series stay converted (FIX_PLAN findings 1, 7, 8) ---------------------------------
+# --- converted series stay converted -------------------------------------------------------------
 
 
 def _twin(seed: int, description: str = "SYNTHETIC"):
@@ -339,7 +339,7 @@ def test_names_that_differ_only_in_case_are_numbered(tmp_path):
     assert "duplicate name: series #1, #2 map to the same name" in result.output
 
 
-# --- in-place runs: what belongs to the dataset (FIX_PLAN finding 5) ---------------------------
+# --- in-place runs: what belongs to the dataset -------------------------------------------------
 
 
 def _in_place(source: Path, command: str = "run"):
@@ -391,7 +391,7 @@ def test_later_in_place_runs_skip_the_subject_folders(tmp_path):
     assert "Scanned 5 files: 5 DICOM instances in 1 series, 0 files skipped." in result.output
 
 
-# --- a path that changes its series (FIX_PLAN finding 9) ---------------------------------------
+# --- a path that changes its series -------------------------------------------------------------
 
 
 def _replace_folder(folder: Path, series) -> None:
@@ -413,6 +413,19 @@ def test_file_of_an_unconverted_series_replaced_by_a_new_series(tmp_path):
     with sqlite3.connect(dataset / "manifest.sqlite") as db:
         counts = dict(db.execute("SELECT series_id, COUNT(*) FROM instances GROUP BY 1"))
     assert counts == {2: 4, 3: 6}  # series 1 lost the paths that are no longer its files
+
+
+def test_series_that_lost_all_its_files_fails_cleanly(tmp_path):
+    src, dataset = tmp_path / "src", tmp_path / "dataset"
+    write_series(_series(1), src / "a")
+    write_manifest(dataset, scan(src))  # scanned, not converted
+    _replace_folder(src / "a", _series(2, seed=2))  # every file is another series now
+
+    result = _run(src, dataset)
+
+    assert isinstance(result.exception, SystemExit), repr(result.exception)  # no traceback
+    assert "  series #1 failed: source files no longer found" in result.output
+    assert _status(dataset) == {1: "failed", 2: "converted"}
 
 
 def test_file_of_a_converted_series_replaced_by_another_series(tmp_path):

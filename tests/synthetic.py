@@ -40,7 +40,7 @@ Vec = tuple[float, float, float]
 
 
 def synthetic_uid(*parts: object) -> str:
-    """Deterministic ``2.25.<uuid5-as-integer>`` UID (same scheme as PLAN.md §2)."""
+    """Deterministic ``2.25.<uuid5-as-integer>`` UID (same scheme as the tool's derived UIDs)."""
     return f"2.25.{uuid.uuid5(UID_NAMESPACE, '|'.join(map(str, parts))).int}"
 
 

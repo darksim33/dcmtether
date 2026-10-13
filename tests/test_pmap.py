@@ -1,4 +1,4 @@
-"""Phase 5b: float/integer map NIfTI + source pair -> DICOM Parametric Map."""
+"""Float/integer map NIfTI + source pair -> DICOM Parametric Map."""
 
 import copy
 import json

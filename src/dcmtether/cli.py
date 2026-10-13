@@ -20,9 +20,6 @@ from dcmtether.errors import DcmtetherError
 from dcmtether.manifest import ManifestUpdate
 from dcmtether.scanning import Status, plural
 
-#: Exit code for commands that are not implemented yet.
-EXIT_NOT_IMPLEMENTED = 3
-
 _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
 _output_dir = click.Path(file_okay=False, path_type=Path)

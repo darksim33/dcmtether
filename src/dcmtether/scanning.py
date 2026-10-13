@@ -1,6 +1,6 @@
-"""Phase 1: walk a directory, read DICOM headers only, group by series and classify.
+"""Walk a directory, read DICOM headers only, group by series and classify.
 
-Classification (PLAN.md §2):
+Classification:
 
 - ``supported``: one regular 3D stack (or a single slice), or a 4D series of such stacks whose
   volumes one attribute tells apart (:data:`VOLUME_KEYS`). Enhanced MR is classified frame by
@@ -47,13 +47,13 @@ from dcmtether import diffusion, frames
 from dcmtether._quiet import quiet_pydicom
 from dcmtether.progress import Progress, no_progress
 
-#: Enhanced MR: one image per frame, geometry from functional groups (Phase 4c).
+#: Enhanced MR: one image per frame, geometry from functional groups.
 MULTI_FRAME_SOP_CLASSES = frozenset({EnhancedMRImageStorage})
 SUPPORTED_SOP_CLASSES = frozenset({MRImageStorage}) | MULTI_FRAME_SOP_CLASSES
 UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset(
     {ImplicitVRLittleEndian, ExplicitVRLittleEndian, ExplicitVRBigEndian}
 )
-#: Decoded for the NIfTI; to-dcm writes Explicit VR Little Endian instead (PLAN.md §2).
+#: Decoded for the NIfTI; to-dcm writes Explicit VR Little Endian instead.
 LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES = frozenset(
     {RLELossless, JPEGLossless, JPEGLosslessSV1, JPEGLSLossless, JPEG2000Lossless}
 )
@@ -705,7 +705,7 @@ def classify(series: Series) -> None:
 #: ``--output``). Other files in logs/ are read: a source folder may be called that.
 _DATASET_FILES = re.compile(r"manifest\.sqlite(-journal|-wal|-shm)?|README\.md")
 _DATASET_DIRS = re.compile(r"sub-.*")
-_LOG_DIR = "logs"
+LOG_DIR = "logs"
 _LOG_FILES = re.compile(r"dcmtether.*\.jsonl")
 
 
@@ -723,7 +723,7 @@ def _walk(root: Path, exclude: Path | None) -> list[Path]:
             if here.resolve() == exclude:
                 dirnames[:] = [d for d in dirnames if not _DATASET_DIRS.fullmatch(d)]
                 filenames = [f for f in filenames if not _DATASET_FILES.fullmatch(f)]
-            elif here.name == _LOG_DIR and here.parent.resolve() == exclude:
+            elif here.name == LOG_DIR and here.parent.resolve() == exclude:
                 filenames = [f for f in filenames if not _LOG_FILES.fullmatch(f)]
         dirnames.sort()
         files.extend(here / name for name in sorted(filenames))

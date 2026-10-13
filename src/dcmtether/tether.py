@@ -1,4 +1,4 @@
-"""``*.tether.json``: everything but pixel data, as DICOM JSON (PLAN.md §2 and §4)."""
+"""``*.tether.json``: everything but pixel data, as DICOM JSON (docs/formats.md)."""
 
 import base64
 import copy

@@ -1,4 +1,4 @@
-"""Phase 5a: label map NIfTI + source NIfTI/tether pair -> DICOM Segmentation (SEG).
+"""Label map NIfTI + source NIfTI/tether pair -> DICOM Segmentation (SEG).
 
 The source images are rebuilt in memory from the tether.json (no original files needed). The
 label map must lie on the source NIfTI grid (same shape and affine): every SEG frame then

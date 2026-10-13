@@ -1,4 +1,4 @@
-"""Phase 5c: derived MR images (DERIVED\\SECONDARY) as a fallback for PACS without SEG/PM support.
+"""Derived MR images (DERIVED\\SECONDARY) as a fallback for PACS without SEG/PM support.
 
 One classic MR image per source slice, built from that source image's header as a template:
 new deterministic UIDs, ``ImageType DERIVED\\SECONDARY``, a SourceImageSequence reference, tool

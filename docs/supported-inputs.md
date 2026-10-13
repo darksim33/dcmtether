@@ -32,6 +32,8 @@ stored in the manifest.
 | Missing PatientName or StudyDate | file names are built from them |
 | Header values NaN/Inf | not storable in JSON |
 
+Some of these are on the [roadmap](roadmap.md).
+
 ## Derivatives
 
 `to-seg`, `to-pmap` and `to-mr` need a 3D source (no 4D sources; SEG/Parametric Map: no

@@ -1,4 +1,4 @@
-"""Dataset manifest: one SQLite file per dataset (PLAN.md §2).
+"""Dataset manifest: one SQLite file per dataset.
 
 The manifest holds Study/Series UIDs and source paths, so it is as sensitive as the source
 DICOM headers and lives inside the (non-shareable) dataset directory.
@@ -19,7 +19,7 @@ from dcmtether.scanning import ScanResult
 MANIFEST_NAME = "manifest.sqlite"
 SCHEMA_VERSION = 4
 
-# Version 1 as written by Phase 1; newer versions are reached via _UPGRADES only, so new
+# Version 1; newer versions are reached via _UPGRADES only, so new
 # manifests and upgraded old ones always end up identical.
 _SCHEMA_V1 = """
 CREATE TABLE meta (
@@ -62,7 +62,7 @@ CREATE TABLE skipped_files (
 """
 
 _UPGRADES = {
-    # 1 → 2 (Phase 2): labels and outputs of the NIfTI conversion; paths relative to the dataset.
+    # 1 → 2: labels and outputs of the NIfTI conversion; paths relative to the dataset.
     2: """
 ALTER TABLE series ADD COLUMN subject TEXT;
 ALTER TABLE series ADD COLUMN session TEXT;
@@ -73,7 +73,7 @@ ALTER TABLE series ADD COLUMN conversion_status TEXT
     CHECK (conversion_status IN ('converted', 'failed'));
 ALTER TABLE series ADD COLUMN conversion_error TEXT;
 """,
-    # 2 → 3 (Phase 4): a series can have several outputs (chunks of a split series).
+    # 2 → 3: a series can have several outputs (chunks of a split series).
     3: """
 CREATE TABLE outputs (
     series_id    INTEGER NOT NULL REFERENCES series (id),

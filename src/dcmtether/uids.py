@@ -1,4 +1,4 @@
-"""Deterministic UIDs for derived objects (PLAN.md §2).
+"""Deterministic UIDs for derived objects.
 
 ``2.25.<uuid5 as integer>`` needs no organisation root. The name hashed into the UUID includes
 the source UID, the kind of derivation and a hash of the derived content, so identical reruns

@@ -31,6 +31,7 @@ dt.to_dcm("dataset/sub-…/….nii.gz", "rebuilt/")
 - [Formats](docs/formats.md): dataset layout, file names, `*.tether.json`, sidecar, manifest, log.
 - [Supported inputs](docs/supported-inputs.md): what converts, what does not, and why.
 - Example metadata templates: [`docs/examples/`](docs/examples/).
+- [Roadmap](docs/roadmap.md): ideas for later versions.
 - [Changelog](CHANGELOG.md).
 
 ## Development
@@ -39,6 +40,5 @@ dt.to_dcm("dataset/sub-…/….nii.gz", "rebuilt/")
 uv run ruff format --check . && uv run ruff check . && uv run pytest
 ```
 
-The first test run downloads public test data and the DICOM standard into `.cache/`. Plan and
-decisions: `docs/dev/PLAN.md`; conventions and data-protection rules: `CLAUDE.md`; test data
+The first test run downloads public test data and the DICOM standard into `.cache/`. Test data
 coverage: `docs/dev/test-data.md`.

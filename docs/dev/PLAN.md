@@ -305,6 +305,8 @@ Outcome and decisions:
 - Small fixes (decided 2026-10-13, FIX_PLAN findings 5, 6, 9, 10): the first in-place `run`/`scan` refuses a SOURCE with top-level `sub-*` folders ("SOURCE already has sub-* folders (N); use --output"), and in-place scans skip only `logs/dcmtether*.jsonl`, not `logs/` as a whole. Messages say DATASET instead of the dataset path. `update_manifest` frees paths before inserting: a series the scan no longer finds loses paths that are another series' files now; a file of a converted series that belongs to another series is an error by id (rolled back). `to-mr` leaves no `.partial` file after a failed write.
 
 ### Future features (not scheduled)
+The public copy of this list is `docs/roadmap.md` (no phases, dates or internal names); keep the two in step.
+
 - **Multi-plane enhanced files** (added 2026-10-13): one multi-frame file with frames in
   several image planes, as chunks. Needs a tether format change (a chunk that holds only
   some frames of a file); rejected at scan until then.

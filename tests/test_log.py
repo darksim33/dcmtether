@@ -1,4 +1,4 @@
-"""Phase 6: structured JSON-lines log in the dataset (no PHI: ids, keywords and counts only)."""
+"""Structured JSON-lines log in the dataset (no PHI: ids, keywords and counts only)."""
 
 import json
 import re

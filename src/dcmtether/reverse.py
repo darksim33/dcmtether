@@ -1,4 +1,4 @@
-"""Phase 3: NIfTI + ``*.tether.json`` → DICOM files identical to the originals.
+"""NIfTI + ``*.tether.json`` → DICOM files identical to the originals.
 
 Error messages never contain element values or file names (PHI rules).
 """
@@ -119,7 +119,8 @@ def _set_pixel_data(ds: pydicom.Dataset, plane: np.ndarray, vr: str, trailing: s
 def transfer_syntax_change(document: dict) -> tuple[str, str] | None:
     """(source, written) transfer syntax names if to-dcm does not write the source's syntax.
 
-    Lossless compressed sources are written as Explicit VR Little Endian (PLAN.md §2).
+    Lossless compressed sources are written as Explicit VR Little Endian: the
+    decoded pixels are identical, re-encoding would not reproduce the original bytes.
     """
     source = UID(document["source"]["transfer_syntax_uid"])
     if source in LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES:

@@ -1,8 +1,8 @@
 """Structured JSON-lines log in the dataset: ``DATASET/logs/dcmtether_<time>.jsonl``.
 
 ``<time>`` is the UTC start of the command (``YYYYMMDDTHHMMSS``). ``run``, ``scan`` and
-``to-nii`` start a file each; commands on a single series append to the newest one (PLAN.md
-Phase 6). One record per event: time, tool version, command, event and a few fields from a fixed
+``to-nii`` start a file each; commands on a single series append to the newest one.
+One record per event: time, tool version, command, event and a few fields from a fixed
 allowlist. Records never contain element values, names, UIDs or paths (PHI rules): series are
 named by manifest id and failures by their safe (value-free) message. Unknown field names are
 refused, so new code cannot start logging values by accident.
@@ -18,8 +18,8 @@ from pathlib import Path
 from dcmtether import __version__
 from dcmtether.errors import DcmtetherError
 from dcmtether.manifest import MANIFEST_NAME
+from dcmtether.scanning import LOG_DIR
 
-LOG_DIR = "logs"
 #: Log files of any version: ``dcmtether.jsonl`` (before the names had a timestamp),
 #: ``dcmtether_<time>.jsonl`` and ``dcmtether_<time>_<n>.jsonl`` (same second).
 LOG_FILE = re.compile(r"dcmtether(?:_(\d{8}T\d{6})(?:_(\d+))?)?\.jsonl")

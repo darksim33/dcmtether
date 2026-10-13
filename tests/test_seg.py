@@ -1,4 +1,4 @@
-"""Phase 5a: label map NIfTI + source pair -> DICOM SEG."""
+"""Label map NIfTI + source pair -> DICOM SEG."""
 
 import copy
 import json

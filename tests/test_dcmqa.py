@@ -90,7 +90,7 @@ EXPECTED_CONVERTED = {
     "dcm_qa_nih": 0,  # GE fMRI (volumes told apart only by InstanceNumber) + Siemens mosaic
     "dcm_qa_pdt2": 1,  # Siemens dual-echo PD/T2 (4D, EchoNumbers)
     "dcm_qa_philips_dwi": 0,  # classic + enhanced exports share one series UID
-    "dcm_qa_ts": 0,  # one series in 7 transfer syntaxes (Phase 4b)
+    "dcm_qa_ts": 0,  # one series in 7 transfer syntaxes
 }
 
 

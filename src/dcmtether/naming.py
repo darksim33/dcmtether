@@ -1,11 +1,12 @@
-"""BIDS-inspired file names (PLAN.md §2, "Naming").
+"""BIDS-inspired file names.
 
     sub-<Family5><Given5 | FamilyGiven>_ses-<YYYYMMDD[THHMM]>[_acq-<desc>]_ser-<NN>[_<XX>]_<suffix>
 
-(No body-part entity, by decision of 2026-10-07; BodyPartExamined stays in manifest/sidecar.)
+(No body-part entity: BodyPartExamined stays in manifest and sidecar.)
 
 Subject and session labels are built from PatientName and StudyDate, so **file names identify
-the patient** (decision of 2026-10-07, see PLAN.md §2). Code must still never print them: callers
+the patient** (deliberately: they are readable for the people working on the data). Code must
+still never print them: callers
 report problems by manifest series id.
 """
 

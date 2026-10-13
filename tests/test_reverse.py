@@ -215,7 +215,7 @@ def test_round_trip_keeps_bytes_after_the_last_pixel(tmp_path):
 
 
 def test_unused_high_bits_are_not_kept(tmp_path):
-    # Accepted (PLAN.md §6): bits above BitsStored are not part of the pixel value.
+    # Accepted: bits above BitsStored are not part of the pixel value.
     series = make_series(SeriesSpec(n_slices=2, extra={"BitsStored": 12, "HighBit": 11}))
     for ds in series.datasets:
         ds.PixelData = (np.frombuffer(ds.PixelData, "<u2") | 0xF000).astype("<u2").tobytes()
@@ -224,7 +224,7 @@ def test_unused_high_bits_are_not_kept(tmp_path):
     assert {n.kind for n in report.notes} == {"raw bytes differ (decoded pixels equal)"}
 
 
-# --- known JSON-model losses (PLAN.md §6, caveats 3-5) -----------------------------------------
+# --- values the DICOM JSON model does not hold as they are (kept via original strings) ---------
 
 
 def _forced_ds(text: str) -> DS:

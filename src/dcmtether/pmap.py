@@ -1,4 +1,4 @@
-"""Phase 5b: map NIfTI (ADC, QSM, ...) + source NIfTI/tether pair -> DICOM Parametric Map.
+"""Map NIfTI (ADC, QSM, ...) + source NIfTI/tether pair -> DICOM Parametric Map.
 
 The map must lie on the source NIfTI grid; every frame references its source image. Values are
 stored losslessly: float32/float64 maps as Float/DoubleFloatPixelData, integer maps as unsigned

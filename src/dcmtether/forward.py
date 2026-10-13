@@ -1,4 +1,4 @@
-"""Phase 2: supported DICOM series → NIfTI + ``*.tether.json`` + human sidecar.
+"""Supported DICOM series → NIfTI + ``*.tether.json`` + human sidecar.
 
 Error messages produced here never contain element values (names, IDs, dates, UIDs); series
 are referred to by manifest id. Unexpected exceptions are stored in full in the (local,
@@ -850,9 +850,15 @@ def convert_dataset(
             if row["conversion_status"] == "converted":
                 converted.append(_converted(db, root, row, full))
                 continue
-            first = root / manifest.instance_paths(db, row["id"])[0]
+            paths = manifest.instance_paths(db, row["id"])
+            if not paths:  # every file of it belongs to another series by now
+                manifest.record_failed(db, row["id"], "source files no longer found")
+                outcomes.append(Outcome(row["id"], False, "source files no longer found"))
+                continue
             try:
-                inputs.append(read_label_input(row["id"], first, _is_diffusion(row["geometry"])))
+                inputs.append(
+                    read_label_input(row["id"], root / paths[0], _is_diffusion(row["geometry"]))
+                )
             except Exception as exc:
                 manifest.record_failed(db, row["id"], f"cannot read header: {exc!r}")
                 outcomes.append(
@@ -883,6 +889,6 @@ def convert_dataset(
                 continue
             manifest.record_converted(db, sid, plan.names, outputs)
             outcomes.append(Outcome(sid, True, outputs=len(outputs), warning=plan.warning))
-        return outcomes
+        return sorted(outcomes, key=lambda o: o.series_id)
     finally:
         db.close()

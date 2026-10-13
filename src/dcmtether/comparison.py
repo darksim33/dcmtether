@@ -1,4 +1,4 @@
-"""Element-by-element comparison of an original and a rebuilt DICOM series (PLAN.md §6.2).
+"""Element-by-element comparison of an original and a rebuilt DICOM series.
 
 Identity means: same instances (paired by SOPInstanceUID), same elements with the same VR and
 the same encoded value bytes (so DS/IS strings and character set encodings count), sequences
@@ -25,7 +25,6 @@ from dcmtether.scanning import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES
 from dcmtether.tether import element_name
 
 PIXEL_DATA = 0x7FE00010
-TRANSFER_SYNTAX = 0x00020010
 #: Derived from the other file meta elements; a difference there is reported on its own.
 FILE_META_GROUP_LENGTH = 0x00020000
 

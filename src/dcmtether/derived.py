@@ -1,4 +1,4 @@
-"""Shared machinery for derived DICOM objects (SEG, Parametric Map): PLAN.md Phase 5.
+"""Shared machinery for derived DICOM objects (SEG, Parametric Map, derived MR).
 
 A derivative is a NIfTI on the grid of a converted source NIfTI. The source images are rebuilt
 in memory from its tether.json (no original files needed), every derived frame references its
@@ -22,7 +22,7 @@ from dcmtether._quiet import quiet_pydicom
 from dcmtether.errors import DcmtetherError
 from dcmtether.scanning import ORIENTATION_TOL, POSITION_TOL_MM
 
-#: Marks every derived object (PLAN.md §2, research labeling).
+#: Marks every derived object (appended to SeriesDescription, in the content description).
 RESEARCH_LABEL = "RESEARCH USE ONLY"
 CONTENT_DESCRIPTION = f"{RESEARCH_LABEL} - not for clinical use"
 EQUIPMENT = {
@@ -165,7 +165,7 @@ def load_on_grid(path: Path, source: Source, what: str) -> nib.Nifti1Image:
 
 
 def uids_for(source: Source, derivation: str, parts: Iterable[str], array: np.ndarray):
-    """(series UID, SOP instance UID), content-hashed (PLAN.md §2)."""
+    """(series UID, SOP instance UID): the same inputs give the same UIDs, other content new."""
     content = hashlib.sha256()
     for part in (source.series_instance_uid, derivation, str(array.shape), str(array.dtype)):
         content.update(part.encode("utf-8") + b"\0")

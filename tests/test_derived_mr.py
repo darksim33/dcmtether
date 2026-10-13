@@ -1,4 +1,4 @@
-"""Phase 5c: derived MR images (DERIVED\\SECONDARY) as a fallback for PACS without SEG/PM."""
+"""Derived MR images (DERIVED\\SECONDARY) as a fallback for PACS without SEG/PM."""
 
 import copy
 import json
@@ -179,7 +179,7 @@ def test_uids_are_deterministic(tmp_path, derived):
 
 
 #: The classic MR Image IOD has no Modality LUT module; like Philips, derived maps still carry
-#: RescaleSlope/Intercept/Type so PACS show real values (deliberate, PLAN.md §2).
+#: RescaleSlope/Intercept/Type so PACS show real values (deliberate).
 RESCALE_DEVIATION = {
     ("General", keyword, ErrorCode.TagUnexpected)
     for keyword in ("RescaleSlope", "RescaleIntercept", "RescaleType")

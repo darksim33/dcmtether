@@ -1,4 +1,4 @@
-"""Per-frame views of DICOM instances (Enhanced MR functional groups, PLAN.md Phase 4c).
+"""Per-frame views of DICOM instances (Enhanced MR functional groups).
 
 A *view* is a flat dataset holding what one frame "is": the instance's top-level elements plus
 the contents of every functional group that applies to the frame (shared first, then
