@@ -15,3 +15,21 @@ wheels/
 
 # test files
 .cache/
+
+# PHI guards (CLAUDE.md): never commit patient data or converted datasets.
+# Never weaken these; re-include approved fixtures with explicit `!` rules only.
+# Extensionless DICOM files are not caught: check `git status` before committing.
+*.dcm
+*.DCM
+*.ima
+*.IMA
+DICOMDIR
+*.nii
+*.nii.gz
+*.tether.json
+manifest.sqlite*
+dcmtether.jsonl
+dataset/
+sub-*/
+*subject-map*
+*subject_map*
