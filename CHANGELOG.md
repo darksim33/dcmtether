@@ -54,8 +54,10 @@ First release. Research use only — not for clinical or diagnostic use.
 - Converted series are fixed: their names are stored in the manifest, so later runs neither
   need their source files again nor rename them.
 - Manifest (`manifest.sqlite`), a dataset README, and a structured JSON-lines log
-  (`logs/dcmtether.jsonl`) holding ids, keywords and counts only.
+  (`logs/dcmtether_<time>.jsonl`, one file per `run`, `scan` and `to-nii`) holding ids,
+  keywords and counts only.
 - Console output never names patients, UIDs or paths; series are named by manifest id.
+- `run` without `--output` refuses a SOURCE that already has `sub-*` folders.
 - Progress bars on stderr in a terminal (`TQDM_DISABLE=1` turns them off).
 
 ### Known limitations

@@ -6,7 +6,7 @@
 dataset/
 ├── manifest.sqlite                 scan and conversion records
 ├── README.md                       identifying-data warning, file name entities
-├── logs/dcmtether.jsonl            structured log (no PHI)
+├── logs/dcmtether_<time>.jsonl     structured log (no PHI)
 └── sub-<subject>/ses-<session>/
     ├── anat/<stem>.nii.gz          voxels (raw stored values, closest RAS)
     ├── anat/<stem>.json            human-readable sidecar (BIDS-style keys)
@@ -118,8 +118,11 @@ Older manifests are upgraded in place when opened. The manifest holds UIDs, Pati
 
 ## Log
 
-`logs/dcmtether.jsonl`: one JSON object per line, appended by every command that works on the
-dataset. Fields come from a fixed allowlist (`dcmtether.log.ALLOWED_FIELDS`): `time`,
+`logs/dcmtether_<time>.jsonl`: one JSON object per line, written by every command that works
+on the dataset. `<time>` is the UTC start of the command (`YYYYMMDDTHHMMSS`; `_2`, `_3`, …
+are added within the same second). `run`, `scan` and `to-nii` start a file each; `to-dcm`,
+`to-seg`, `to-pmap` and `to-mr` append to the newest one, or start one if there is none. A
+`logs/dcmtether.jsonl` from before the names had a timestamp is left as it is. Fields come from a fixed allowlist (`dcmtether.log.ALLOWED_FIELDS`): `time`,
 `version`, `command`, `event`, `series_id`, `status`, `reason`, counts (`count`, `outputs`,
 `n_files`, `n_series`, `n_converted`, `n_failed`, …), lists of series ids (`new`,
 `rescanned`, `unchanged`, `changed_after_conversion`, `missing`) and `kind`. Events: `start`,

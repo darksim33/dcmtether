@@ -22,9 +22,13 @@ your tool ──▶ label map / ADC map on the NIfTI grid
 ### `run SOURCE [--output/-o DATASET] [--full-name/-f] [--verbose/-v]`
 
 Scans SOURCE (headers only) and converts every convertible series into DATASET, which is SOURCE
-itself unless `--output` names another directory. In-place, the dataset's own top-level entries
-(`manifest.sqlite`, `README.md`, `logs/`, `sub-*/`) are left out of later scans, so SOURCE
-should not hold folders with those names. Safe to run again on the same SOURCE and DATASET: new series are added (with new ids), series that are not converted
+itself unless `--output` names another directory. In-place, the dataset's own entries
+(`manifest.sqlite`, `README.md`, `sub-*/` and its log files `logs/dcmtether*.jsonl`) are left
+out of later scans. A SOURCE that already has `sub-*` folders of its own is therefore refused
+on the first in-place run ("SOURCE already has sub-* folders (N); use --output"); a source
+folder called `logs` is read as usual.
+
+Safe to run again on the same SOURCE and DATASET: new series are added (with new ids), series that are not converted
 yet are rescanned, failed ones are retried. Converted series are never touched; if their source
 files changed, that is reported (delete their outputs and manifest entry to redo them). A
 different SOURCE for an existing dataset is refused. `--verbose` lists every series.
@@ -100,14 +104,17 @@ mapping reproduces the NIfTI values (including its scaling). NaN/Inf are refused
 Fallback for PACS that cannot show SEG or Parametric Maps: one classic MR image per source
 slice, built from the source image's header (private tags dropped), `ImageType
 DERIVED\SECONDARY`. METADATA decides the kind: a SEG template writes label values as pixels
-(exact), a parametric map template writes the map with RescaleSlope/Intercept — exact for
-integer maps, **quantised to 16 bits** for float maps (the max error is printed; `to-pmap`
-is the exact form).
+(exact), a parametric map template writes the map with RescaleSlope/Intercept. Integer maps
+keep their stored values; if the scaling does not fit the 16 characters of a DICOM decimal
+string, "Rescale rounded to DS precision: max error …" is printed. Float maps are
+**quantized to 16 bits** ("Quantized to 16 bits: max error …"). `to-pmap` is the exact
+form.
 
 ## Logs
 
 Commands that work on a dataset (`run`, `scan`, `to-nii`, and `to-dcm`/`to-seg`/`to-pmap`/
-`to-mr` on a dataset NIfTI) append JSON lines to `DATASET/logs/dcmtether.jsonl`: time,
+`to-mr` on a dataset NIfTI) write JSON lines to `DATASET/logs/dcmtether_<time>.jsonl` (a new
+file per `run`, `scan` and `to-nii`; the other commands append to the newest): time,
 version, command, event, manifest series id, safe reasons and counts — never element values,
 names, UIDs or paths. See [formats](formats.md#log).
 
