@@ -156,6 +156,38 @@ def test_multi_echo_sidecar(tmp_path):
     assert sidecar["DcmTether"]["PerVolume"]["EchoNumbers"] == [1, 2, 3]
 
 
+def _per_volume(tmp_path, series) -> tuple[list[str], dict]:
+    dataset = _dataset(tmp_path, series)
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    nifti = _single_output(dataset)
+    info = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))["DcmTether"]
+    return info["VolumeKey"], info["PerVolume"]
+
+
+def test_per_volume_echo_time_in_seconds_without_echo_numbers(tmp_path):
+    series = make_4d(n_volumes=3, kind="echo")
+    for ds in series.datasets:
+        del ds.EchoNumbers
+    volume_key, per_volume = _per_volume(tmp_path, series)
+    assert volume_key == ["EchoTime"]  # the DICOM keyword
+    assert per_volume == {"EchoTime": [0.015, 0.03, 0.045]}
+
+
+def test_per_volume_inversion_time_in_seconds(tmp_path):
+    series = make_4d(n_volumes=3, kind="none")
+    for ds in series.datasets:
+        ds.InversionTime = pydicom.valuerep.DS(100 * ((ds.InstanceNumber - 1) // 5 + 1))
+    volume_key, per_volume = _per_volume(tmp_path, series)
+    assert volume_key == ["InversionTime"]
+    assert per_volume == {"InversionTime": [0.1, 0.2, 0.3]}
+
+
+def test_per_volume_keeps_keys_without_unit_rule(tmp_path):
+    volume_key, per_volume = _per_volume(tmp_path, make_4d(n_volumes=3, kind="dynamic"))
+    assert volume_key == ["TemporalPositionIdentifier"]
+    assert per_volume["TemporalPositionIdentifier"] == [1, 2, 3]
+
+
 def test_diffusion_goes_to_dwi(tmp_path):
     dataset = _dataset(tmp_path, make_4d(n_volumes=3, kind="diffusion"))
     convert_dataset(dataset)
@@ -776,7 +808,8 @@ def test_enhanced_sidecar_uses_functional_groups(tmp_path):
     nifti = _single_output(dataset)
     sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
     assert sidecar["DcmTether"]["VolumeKey"] == ["EffectiveEchoTime"]
-    assert sidecar["DcmTether"]["PerVolume"]["EchoTime"] == [0.015, 0.03, 0.045]
+    # under the sidecar key, in seconds; the DICOM keyword stays in VolumeKey only
+    assert sidecar["DcmTether"]["PerVolume"] == {"EchoTime": [0.015, 0.03, 0.045]}
     assert sidecar["SliceThickness"] == 3.0  # from PixelMeasuresSequence
 
 
