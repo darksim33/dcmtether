@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/logo.svg" alt="DCMtether logo" width="240"></p>
+<p align="center"><img src="docs/assets/logo.png" alt="DCMtether logo" width="240"></p>
 
 # DCMtether
 
