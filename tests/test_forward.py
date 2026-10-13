@@ -325,7 +325,7 @@ def test_manifest_records_outputs(tmp_path):
     assert first["sidecar_path"].endswith("_T1w.json")
     assert first["n_volumes"] == 1
     with sqlite3.connect(dataset / "manifest.sqlite") as db:
-        assert db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ("3",)
+        assert db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ("4",)
 
 
 def test_dataset_readme_warns_and_is_not_overwritten(tmp_path):

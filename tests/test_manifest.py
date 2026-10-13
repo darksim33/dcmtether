@@ -105,3 +105,21 @@ def test_upgrade_from_v2_moves_outputs(tmp_path):
     ]
     assert "nifti_path" not in columns
     assert "conversion_status" in columns
+
+
+def test_a_converted_series_cannot_be_marked_failed(tmp_path):
+    write_series(make_series(), tmp_path / "src")
+    dataset = tmp_path / "dataset"
+    write_manifest(dataset, scan(tmp_path / "src"))
+    db = manifest.open_manifest(dataset)
+    try:
+        output = manifest.Output(1, "a.nii.gz", "a.tether.json", "a.json", 1)
+        names = manifest.Names("Sub", "20260101", "stem", None, "P1", "Sub")
+        manifest.record_converted(db, 1, names, [output])
+        manifest.record_failed(db, 1, "cannot read header")
+        assert _rows(db, "SELECT conversion_status, conversion_error FROM series") == [
+            {"conversion_status": "converted", "conversion_error": None}
+        ]
+        assert len(_rows(db, "SELECT * FROM outputs")) == 1
+    finally:
+        db.close()
