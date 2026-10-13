@@ -134,7 +134,7 @@ def _number_subjects(inputs: list[LabelInput], subjects: dict[int, str]) -> dict
 
     Stable across runs: manifest ids never change, and a patient already converted keeps the
     label it was converted under (its number is then not reused). Returns a warning per
-    affected series. Labels are letters only, so the appended digits cannot create a clash.
+    affected series. A number that would give another patient's label is skipped.
     """
     by_label: dict[str, dict] = defaultdict(dict)  # label -> PatientID -> [LabelInput]
     for item in inputs:
@@ -149,7 +149,8 @@ def _number_subjects(inputs: list[LabelInput], subjects: dict[int, str]) -> dict
         ]
         if len(order) == 1 and kept[0] is None:
             continue
-        used = {k for k in kept if k is not None}
+        # A numbered label must not equal another patient's own label ("Phantom1" + "01").
+        used = {k for k in kept if k is not None} | (by_label.keys() - {label})
         numbered: dict[int, str] = {}
         for n, (items, new) in enumerate(zip(order, kept, strict=True), start=1):
             if new is None:
@@ -633,7 +634,8 @@ coordinates and are listed unconverted as `DiffusionGradientVendor`.
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
 - `sub-`: first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase), or
-  the full family + given name if the dataset was started with `--full-name`.
+  the full family + given + middle name (digits kept) if the dataset was started with
+  `--full-name`.
   Different PatientIDs with the same label (e.g. phantoms, study codes as names) are numbered
   `01`, `02`, ... in manifest order (`sub-PhantQa01`); a converted patient keeps its label.
 - `ses-`: StudyDate `YYYYMMDD`; `THHMM` from StudyTime is appended only when one subject has

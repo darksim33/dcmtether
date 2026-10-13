@@ -39,19 +39,31 @@ def _ascii_letters(text: str) -> str:
     return "".join(c for c in _fold(text) if c.isalpha())
 
 
-def _name_part(text: str, length: int | None = NAME_PART_LENGTH) -> str:
-    letters = _ascii_letters(text)[:length]
+def _name_part(text: str) -> str:
+    letters = _ascii_letters(text)[:NAME_PART_LENGTH]
     return letters[:1].upper() + letters[1:].lower()
 
 
+def _full_name_part(text: str) -> str:
+    """Letters and digits, uncut: digits often are what tells phantoms or study codes apart."""
+    kept = "".join(c for c in _fold(text) if c.isalnum())
+    return kept[:1].upper() + kept[1:].lower()
+
+
 def subject_label(patient_name: str | PersonName | None, full: bool = False) -> str:
-    """``MÜLLER^THOMAS`` → ``MuellThoma`` (first 5 letters of family and given name), or
-    ``MuellerThomas`` with ``full``."""
+    """``MÜLLER^THOMAS`` → ``MuellThoma`` (first 5 letters of family and given name).
+
+    With ``full``: the whole family, given and middle name, digits included
+    (``MuellerThomas``, ``Phantom2Qa``).
+    """
     if patient_name is None:
         raise LabelError("PatientName is missing")
     name = patient_name if isinstance(patient_name, PersonName) else PersonName(patient_name)
-    length = None if full else NAME_PART_LENGTH
-    label = _name_part(name.family_name, length) + _name_part(name.given_name, length)
+    if full:
+        parts = (name.family_name, name.given_name, name.middle_name)
+        label = "".join(_full_name_part(part) for part in parts)
+    else:
+        label = _name_part(name.family_name) + _name_part(name.given_name)
     if not label:
         raise LabelError("PatientName has no usable letters")
     return label
