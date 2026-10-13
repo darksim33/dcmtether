@@ -18,6 +18,7 @@ uv run dcmtether to-seg NIFTI labels.nii.gz seg-template.json seg.dcm
 - [Formats](docs/formats.md): dataset layout, file names, `*.tether.json`, sidecar, manifest, log.
 - [Supported inputs](docs/supported-inputs.md): what converts, what does not, and why.
 - Example metadata templates: [`docs/examples/`](docs/examples/).
+- [Changelog](CHANGELOG.md).
 
 ## Development
 
