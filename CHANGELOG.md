@@ -7,6 +7,13 @@ file formats).
 
 ## [Unreleased]
 
+### Added
+
+- Desktop app (`dcmtether-gui`, tkinter): convert, rebuild, compare and derivatives in one
+  window, with progress and the CLI's report text. Shipped for Windows as a portable folder
+  (`dcmtether-gui-<version>-win64.zip`, no Python or install needed); built with
+  `scripts/build_windows.ps1`. See `docs/gui.md`.
+
 ## [0.1.0] - 2026-10-12
 
 First release. Research use only — not for clinical or diagnostic use.
