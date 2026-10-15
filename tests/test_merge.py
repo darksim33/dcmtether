@@ -290,3 +290,105 @@ def test_merged_tether_of_4d_series(tmp_path):
     rebuilt = tmp_path / "rebuilt"
     dt.to_dcm(group.path, rebuilt)
     assert dt.compare(tmp_path / "src", rebuilt).identical
+
+
+# --- Siemens XA split series (MFSPLIT) ---------------------------------------------------------
+
+XA_MAGNITUDE = ["ORIGINAL", "PRIMARY", "M", "MFSPLIT", "NORM"]
+
+
+def _xa_series(number: int, series_time="101500.123", echo_time=10.0, image_type=None, **attrs):
+    """One classic series that Siemens XA split from an enhanced acquisition."""
+    extra = {
+        "Manufacturer": "SIEMENS",
+        "SoftwareVersions": "syngo MR XA30",
+        "ImageType": image_type or XA_MAGNITUDE,
+        "SeriesTime": series_time,
+        "ProtocolName": "gre_me",
+        "EchoTime": echo_time,
+        **attrs,
+    }
+    series = make_series(SeriesSpec(series_number=number, series_description="gre_me", extra=extra))
+    for ds in series.datasets:
+        pixels = np.frombuffer(ds.PixelData, dtype=series.volume.dtype) + number * 100
+        ds.PixelData = pixels.astype(series.volume.dtype).tobytes()
+    return series
+
+
+def test_xa_split_echoes_are_merged_and_written_back(tmp_path):
+    # SeriesNumbers of one acquisition need not follow any pattern
+    series = [_xa_series(41, echo_time=30.0), _xa_series(7), _xa_series(23, echo_time=20.0)]
+    dataset = _dataset(tmp_path, *series)
+    ids = _ids_by_number(dataset)
+    [group] = dt.merge_series(dataset).groups
+    assert group.rule == "siemens-xa-split"
+    assert group.series_ids == (ids[7], ids[23], ids[41])
+    sidecar_path = group.path.with_name(group.path.name.replace(".nii.gz", ".json"))
+    text = sidecar_path.read_text("utf-8")
+    sidecar = json.loads(text)
+    assert sidecar["DcmTether"]["MergeRule"] == "siemens-xa-split"
+    assert sidecar["DcmTether"]["PerVolume"]["EchoTime"] == [0.01, 0.02, 0.03]
+    assert "101500" not in text  # SeriesTime is a grouping key only
+
+    rebuilt = tmp_path / "rebuilt"
+    dt.to_dcm(group.path, rebuilt)
+    assert dt.compare(tmp_path / "src", rebuilt).identical
+
+
+def test_xa_split_needs_the_same_series_time(tmp_path):
+    dataset = _dataset(tmp_path, _xa_series(7), _xa_series(8, series_time="103000.456"))
+    assert dt.merge_series(dataset).groups == ()
+
+
+def test_xa_split_keeps_magnitude_and_phase_apart(tmp_path):
+    phase = ["ORIGINAL", "PRIMARY", "P", "MFSPLIT", "NORM"]
+    dataset = _dataset(
+        tmp_path,
+        _xa_series(7),
+        _xa_series(8, echo_time=20.0),
+        _xa_series(9, image_type=phase),
+        _xa_series(10, echo_time=20.0, image_type=phase),
+    )
+    ids = _ids_by_number(dataset)
+    groups = dt.merge_series(dataset).groups
+    assert sorted(g.series_ids for g in groups) == sorted([(ids[7], ids[8]), (ids[9], ids[10])])
+    assert all(g.rule == "siemens-xa-split" and g.path is not None for g in groups)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"image_type": ["ORIGINAL", "PRIMARY", "M", "NORM"]},  # no MFSPLIT
+        {"SoftwareVersions": "syngo MR E11"},  # not XA
+        {"Manufacturer": "GE MEDICAL SYSTEMS"},
+    ],
+    ids=["no-mfsplit", "not-xa", "not-siemens"],
+)
+def test_xa_split_rule_needs_all_signals(tmp_path, change):
+    dataset = _dataset(tmp_path, _xa_series(7, **change), _xa_series(8, echo_time=20.0, **change))
+    assert dt.merge_series(dataset).groups == ()
+
+
+def test_xa_split_diffusion_is_grouped_once(tmp_path):
+    """dwi series split by XA match both rules: the XA rule takes them."""
+    diffusion = ["ORIGINAL", "PRIMARY", "DIFFUSION", "NONE", "MFSPLIT"]
+    xa = {"Manufacturer": "SIEMENS", "SoftwareVersions": "syngo MR XA30", "SeriesTime": "101500"}
+    series = []
+    for number, b_value in ((5, 0), (6, 50)):
+        s = _b_series(b_value, number)
+        for ds in s.datasets:
+            ds.ImageType = diffusion
+            for keyword, value in xa.items():
+                setattr(ds, keyword, value)
+        series.append(s)
+    dataset = _dataset(tmp_path, *series)
+    [group] = dt.merge_series(dataset).groups
+    assert group.rule == "siemens-xa-split" and group.path is not None
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["automatic", "ids"])
+def test_merge_rule_is_recorded(tmp_path, named):
+    dataset = _dataset(tmp_path, _b_series(0, 5), _b_series(50, 6))
+    ids = list(_ids_by_number(dataset).values()) if named else None
+    [group] = dt.merge_series(dataset, ids).groups
+    assert group.rule == ("ids" if named else "diffusion-protocol")
