@@ -1,10 +1,11 @@
 """Merge series of one measurement into one 4D NIfTI (experimental).
 
 Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own, with its
-own tether.json, and stays that way: the round trip to DICOM and the derivatives go through
-the series. Merging adds one 4D NIfTI and sidecar per group under
-``DATASET/derivatives/merged/`` (same subject/session/datatype folders as the dataset); it has
-no tether.json and is never rebuilt as DICOM.
+own tether.json, and stays that way. Merging adds one 4D NIfTI, sidecar and tether.json per
+group under ``DATASET/derivatives/merged/`` (same subject/session/datatype folders as the
+dataset). The tether.json combines the series' own: ``to-dcm`` on the merged NIfTI writes the
+source series back, identical to the originals. Only for unchanged voxels: the files keep their
+original UIDs. Series merged as float (different stored scaling) get no tether.json.
 
 Groups are found automatically, or named by manifest id. Every group must share subject,
 session, study, frame of reference and voxel grid. Automatic groups are stricter: one per
@@ -15,6 +16,7 @@ Volumes are ordered by SeriesNumber. Messages name series by manifest id only.
 """
 
 import json
+import posixpath
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -48,6 +50,10 @@ class MergedGroup:
     path: Path | None = None
     #: Why it was not written.
     skipped: str | None = None
+    #: The merged tether.json (``to-dcm`` writes the source series back), or ``None``.
+    tether_path: Path | None = None
+    #: Why no tether.json was written.
+    no_tether: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,9 @@ class _Member:
     frame_of_reference: str | None
     shape: tuple[int, ...]
     affine: np.ndarray
+    tether: Path
+    #: Source folder, POSIX, relative to the source root.
+    source_dir: str
 
     @property
     def n_volumes(self) -> int:
@@ -105,7 +114,7 @@ def _members(dataset: Path) -> dict[int, _Member | str]:
     try:
         rows = db.execute(
             "SELECT s.id, s.series_number, s.study_instance_uid, s.subject, s.session, "
-            "o.nifti_path, o.sidecar_path, o.tether_path, "
+            "s.source_dir, o.nifti_path, o.sidecar_path, o.tether_path, "
             "(SELECT COUNT(*) FROM outputs o2 WHERE o2.series_id = s.id) AS n_outputs "
             "FROM series s JOIN outputs o ON o.series_id = s.id "
             "WHERE s.conversion_status = 'converted' AND o.chunk = 1 ORDER BY s.id"
@@ -136,6 +145,8 @@ def _members(dataset: Path) -> dict[int, _Member | str]:
             _frame_of_reference(document),
             tuple(int(n) for n in header.get_data_shape()),
             header.get_best_affine(),
+            dataset / row["tether_path"],
+            row["source_dir"],
         )
     return members
 
@@ -259,26 +270,48 @@ def _output_path(dataset: Path, first: _Member) -> Path:
     return dataset / DERIVATIVES_DIR / MERGED_DIR / relative.parent / name
 
 
+def _merged_tether(members: list[_Member]) -> dict:
+    """The members' tether documents as one (:func:`dcmtether.tether.combine`)."""
+    folders = [m.source_dir or "." for m in members]
+    common = (posixpath.commonpath(folders) or ".") if len(set(folders)) > 1 else folders[0]
+    prefixes = [posixpath.relpath(f, common) for f in folders]
+    prefixes = ["" if p == "." else p for p in prefixes]
+    return tether.combine([tether.load(m.tether) for m in members], prefixes)
+
+
 def write_group(dataset: Path, members: list[_Member]) -> MergedGroup:
     ids = tuple(m.series_id for m in members)
     n_volumes = sum(m.n_volumes for m in members)
     nifti_path = _output_path(dataset, members[0])
-    sidecar_path = nifti_path.with_name(nifti_path.name.removesuffix(NIFTI_SUFFIX) + SIDECAR_SUFFIX)
-    if nifti_path.exists() or sidecar_path.exists():
+    stem = nifti_path.name.removesuffix(NIFTI_SUFFIX)
+    sidecar_path = nifti_path.with_name(stem + SIDECAR_SUFFIX)
+    tether_path = nifti_path.with_name(stem + tether.TETHER_SUFFIX)
+    targets = (nifti_path, sidecar_path, tether_path)
+    if any(t.exists() for t in targets):
         return MergedGroup(ids, n_volumes, skipped="already merged")
     data, scaling, rescaled = _merged_data(members)
     info = _merged_sidecar(members)
+    document, no_tether = None, None
     if rescaled:
         info["DcmTether"]["Rescaled"] = True  # stored values differed: real values as float
+        no_tether = "stored values rescaled to float"
+    else:
+        try:
+            document = _merged_tether(members)
+        except tether.TetherError as exc:
+            no_tether = str(exc)
     nifti_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         write_nifti(nifti_path, data, members[0].affine, scaling)
         sidecar_path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+        if document is not None:
+            tether.write(document, tether_path)
     except BaseException:
-        nifti_path.unlink(missing_ok=True)
-        sidecar_path.unlink(missing_ok=True)
+        for target in targets:
+            target.unlink(missing_ok=True)
         raise
-    return MergedGroup(ids, n_volumes, nifti_path)
+    written = tether_path if document is not None else None
+    return MergedGroup(ids, n_volumes, nifti_path, tether_path=written, no_tether=no_tether)
 
 
 def merge(dataset: Path, ids: list[int] | None = None) -> MergeResult:

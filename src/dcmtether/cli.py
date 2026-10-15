@@ -214,6 +214,8 @@ def merge(dataset: Path, ids: list[int] | None) -> None:
         listed = ", ".join(f"#{i}" for i in group.series_ids)
         if group.path is not None:
             click.echo(f"Merged series {listed} ({plural(group.n_volumes, 'volume')}).")
+            if group.no_tether:
+                click.echo(f"  no tether.json ({group.no_tether}): to-dcm needs the single series")
         else:
             click.echo(f"Not merged: series {listed}: {group.skipped}.")
     if ids is not None and result.skipped:
