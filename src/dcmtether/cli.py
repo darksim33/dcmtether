@@ -183,6 +183,43 @@ def run(
     _report_conversion(result.conversion, verbose)
 
 
+def _series_ids(ctx, param, value: str | None) -> list[int] | None:
+    if value is None:
+        return None
+    try:
+        return [int(v) for v in value.split(",") if v.strip()]
+    except ValueError:
+        raise click.BadParameter("expected manifest ids like 4,5,6") from None
+
+
+@main.command()
+@click.argument("dataset", type=_existing_dir)
+@click.option(
+    "--ids",
+    callback=_series_ids,
+    help="Merge these series (manifest ids, e.g. 4,5,6) instead of finding groups.",
+)
+def merge(dataset: Path, ids: list[int] | None) -> None:
+    """Merge series of one measurement into one 4D NIfTI (experimental).
+
+    For scanners that write one series per b-value (e.g. IVIM). Without --ids, groups are found
+    automatically. Writes DATASET/derivatives/merged/; the converted series stay as they are.
+    Exit code 1 if a named group was not merged.
+    """
+    with _errors():
+        result = api.merge_series(dataset, ids)
+    if not result.groups:
+        click.echo("No series to merge.")
+    for group in result.groups:
+        listed = ", ".join(f"#{i}" for i in group.series_ids)
+        if group.path is not None:
+            click.echo(f"Merged series {listed} ({plural(group.n_volumes, 'volume')}).")
+        else:
+            click.echo(f"Not merged: series {listed}: {group.skipped}.")
+    if ids is not None and result.skipped:
+        raise click.exceptions.Exit(1)
+
+
 # --- reverse and comparison --------------------------------------------------------------------
 
 

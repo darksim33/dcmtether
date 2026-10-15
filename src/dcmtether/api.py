@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dcmtether import derived_mr, pmap, reverse, scanning, seg, tether
+from dcmtether import derived_mr, merge, pmap, reverse, scanning, seg, tether
 from dcmtether.comparison import Report, compare_series, dicom_files
 from dcmtether.derived_mr import DerivedMRResult
 from dcmtether.forward import Outcome, convert_dataset
@@ -27,6 +27,7 @@ from dcmtether.manifest import (
     update_manifest,
     write_manifest,
 )
+from dcmtether.merge import MergeResult
 from dcmtether.pmap import PmapResult
 from dcmtether.progress import Progress, no_progress
 from dcmtether.scanning import ScanResult, Status
@@ -318,6 +319,28 @@ def run(
         tuple(update.missing),
         conversion,
     )
+
+
+def merge_series(
+    dataset: StrPath, ids: list[int] | None = None, *, log: bool = True
+) -> MergeResult:
+    """Merge series of one measurement (e.g. one series per IVIM b-value) into one 4D NIfTI.
+
+    Without ``ids``, groups are found automatically; with ``ids``, those converted series are
+    merged. Writes ``dataset/derivatives/merged/...``; the converted series stay as they are.
+    Experimental.
+    """
+    dataset = _existing_dir(dataset, "DATASET")
+    if not manifest_path(dataset).exists():
+        raise ManifestError("no manifest in DATASET (run 'dcmtether scan' first)")
+    with logged(dataset if log else None, "merge") as logger:
+        result = merge.merge(dataset, ids)
+        for group in result.groups:
+            if group.path is not None:
+                logger.event("merged", series_ids=list(group.series_ids), count=group.n_volumes)
+            else:
+                logger.event("not_merged", series_ids=list(group.series_ids), reason=group.skipped)
+        return result
 
 
 # --- reverse and comparison --------------------------------------------------------------------

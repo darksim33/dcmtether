@@ -1,0 +1,312 @@
+"""Merge series of one measurement into one 4D NIfTI (experimental).
+
+Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own, with its
+own tether.json, and stays that way: the round trip to DICOM and the derivatives go through
+the series. Merging adds one 4D NIfTI and sidecar per group under
+``DATASET/derivatives/merged/`` (same subject/session/datatype folders as the dataset); it has
+no tether.json and is never rebuilt as DICOM.
+
+Groups are found automatically, or named by manifest id. Every group must share subject,
+session, study, frame of reference and voxel grid. Automatic groups are stricter: one per
+voxel grid, of single-volume diffusion series (suffix ``dwi``) with the same protocol
+(ProtocolName, else SeriesDescription, without b-value tokens such as ``b50``) and echo time,
+whose b-value and gradient differ from each other (a repeated measurement is not merged).
+Volumes are ordered by SeriesNumber. Messages name series by manifest id only.
+"""
+
+import json
+import re
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+
+import nibabel as nib
+import numpy as np
+
+from dcmtether import manifest, tether
+from dcmtether.errors import DcmtetherError
+from dcmtether.forward import NIFTI_SUFFIX, SIDECAR_SUFFIX, write_nifti
+from dcmtether.scanning import DERIVATIVES_DIR, MERGED_DIR
+
+#: Sidecar keys that are always listed per volume (like in a converted diffusion series).
+_ALWAYS_PER_VOLUME = ("DiffusionBValue", "DiffusionGradientOrientation", "DiffusionGradientVendor")
+#: b-value tokens in a protocol name or description: "b50", "b_800", "B-1000", "b=0".
+_B_TOKEN = re.compile(r"(?<![a-z0-9])b[\s_=-]?\d+(?![0-9])", re.I)
+_AFFINE_ATOL = 1e-3
+
+
+class MergeError(DcmtetherError, ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class MergedGroup:
+    #: Manifest ids, in volume order (SeriesNumber).
+    series_ids: tuple[int, ...]
+    n_volumes: int
+    #: The merged NIfTI, or ``None`` if the group was not written.
+    path: Path | None = None
+    #: Why it was not written.
+    skipped: str | None = None
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    groups: tuple[MergedGroup, ...]
+
+    @property
+    def merged(self) -> list[MergedGroup]:
+        return [g for g in self.groups if g.path is not None]
+
+    @property
+    def skipped(self) -> list[MergedGroup]:
+        return [g for g in self.groups if g.path is None]
+
+
+@dataclass(frozen=True)
+class _Member:
+    series_id: int
+    series_number: int | None
+    subject: str
+    session: str
+    study: str | None
+    nifti: Path
+    sidecar: dict
+    frame_of_reference: str | None
+    shape: tuple[int, ...]
+    affine: np.ndarray
+
+    @property
+    def n_volumes(self) -> int:
+        return self.shape[3] if len(self.shape) > 3 else 1
+
+    @property
+    def is_dwi(self) -> bool:
+        return self.nifti.name.endswith(f"_dwi{NIFTI_SUFFIX}")
+
+    def per_volume(self) -> dict[str, list]:
+        """Every sidecar key as one value per volume."""
+        info = self.sidecar.get("DcmTether", {})
+        values = {k: [v] * self.n_volumes for k, v in self.sidecar.items() if k != "DcmTether"}
+        values.update(info.get("PerVolume", {}))
+        return values
+
+
+def _frame_of_reference(document: dict) -> str | None:
+    element = document["shared"].get("00200052") or document["instances"][0]["elements"].get(
+        "00200052"
+    )
+    return (element.get("Value") or [None])[0] if element else None
+
+
+def _members(dataset: Path) -> dict[int, _Member | str]:
+    """Converted series with one output, by id; a reason instead if one cannot be merged."""
+    db = manifest.open_manifest(dataset)
+    try:
+        rows = db.execute(
+            "SELECT s.id, s.series_number, s.study_instance_uid, s.subject, s.session, "
+            "o.nifti_path, o.sidecar_path, o.tether_path, "
+            "(SELECT COUNT(*) FROM outputs o2 WHERE o2.series_id = s.id) AS n_outputs "
+            "FROM series s JOIN outputs o ON o.series_id = s.id "
+            "WHERE s.conversion_status = 'converted' AND o.chunk = 1 ORDER BY s.id"
+        ).fetchall()
+    finally:
+        db.close()
+    members: dict[int, _Member | str] = {}
+    for row in rows:
+        if row["n_outputs"] > 1:
+            members[row["id"]] = "split into several NIfTI files"
+            continue
+        try:
+            nifti = dataset / row["nifti_path"]
+            header = nib.load(nifti).header
+            sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
+            document = tether.load(dataset / row["tether_path"])
+        except (OSError, ValueError, tether.TetherError):
+            members[row["id"]] = "outputs missing or unreadable"
+            continue
+        members[row["id"]] = _Member(
+            row["id"],
+            row["series_number"],
+            row["subject"],
+            row["session"],
+            row["study_instance_uid"],
+            nifti,
+            sidecar,
+            _frame_of_reference(document),
+            tuple(int(n) for n in header.get_data_shape()),
+            header.get_best_affine(),
+        )
+    return members
+
+
+def _ordered(members: list[_Member]) -> list[_Member]:
+    return sorted(
+        members, key=lambda m: (m.series_number is None, m.series_number or 0, m.series_id)
+    )
+
+
+def _mismatch(members: list[_Member]) -> str | None:
+    """Why ``members`` cannot be one 4D image, or ``None``."""
+    first = members[0]
+    checks = [
+        ("subject or session", lambda m: (m.subject, m.session)),
+        ("study", lambda m: m.study),
+        ("frame of reference", lambda m: m.frame_of_reference),
+        ("image size", lambda m: m.shape[:3]),
+    ]
+    for what, key in checks:
+        if any(key(m) != key(first) for m in members):
+            return f"different {what}"
+    if any(not np.allclose(m.affine, first.affine, atol=_AFFINE_ATOL) for m in members):
+        return "different slice positions or orientation"
+    return None
+
+
+def _protocol(member: _Member) -> str | None:
+    text = member.sidecar.get("ProtocolName") or member.sidecar.get("SeriesDescription")
+    if not text:
+        return None
+    return re.sub(r"[^a-z0-9]+", "", _B_TOKEN.sub("", str(text)).lower()) or None
+
+
+def _diffusion_key(member: _Member) -> tuple:
+    per_volume = member.per_volume()
+    b_value = per_volume.get("DiffusionBValue", [None])[0]
+    gradient = (
+        per_volume.get("DiffusionGradientOrientation")
+        or per_volume.get("DiffusionGradientVendor")
+        or [None]
+    )[0]
+    return (b_value, None if gradient is None else tuple(gradient))
+
+
+def find_groups(members: list[_Member]) -> list[tuple[list[_Member], str | None]]:
+    """Automatic groups (see the module docstring), each with a reason if it is not merged."""
+    by_key: dict[tuple, list[_Member]] = defaultdict(list)
+    for m in members:
+        protocol = _protocol(m)
+        if not m.is_dwi or m.n_volumes != 1 or protocol is None:
+            continue
+        # the grid separates acquisitions of one protocol at different positions
+        grid = (m.shape[:3], tuple(np.round(m.affine, 2).ravel().tolist()))
+        echo_time = m.sidecar.get("EchoTime")
+        key = (m.subject, m.session, m.study, m.frame_of_reference, protocol, echo_time, grid)
+        by_key[key].append(m)
+    groups = []
+    for found in by_key.values():
+        if len(found) < 2:
+            continue
+        found = _ordered(found)
+        reason = _mismatch(found)
+        diffusion = [_diffusion_key(m) for m in found]
+        if reason is None and any(b is None for b, _ in diffusion):
+            reason = "b-value missing"
+        if reason is None and len(set(diffusion)) < len(diffusion):
+            reason = "b-values repeat (a repeated measurement?)"
+        groups.append((found, reason))
+    return sorted(groups, key=lambda g: g[0][0].series_id)
+
+
+def _merged_sidecar(members: list[_Member]) -> dict:
+    columns = [m.per_volume() for m in members]
+    keys = list(dict.fromkeys(k for c in columns for k in c))
+    out: dict = {}
+    per_volume: dict = {}
+    for key in keys:
+        values = [
+            v
+            for m, c in zip(members, columns, strict=True)
+            for v in c.get(key, [None] * m.n_volumes)
+        ]
+        if key not in _ALWAYS_PER_VOLUME and all(v == values[0] for v in values):
+            if values[0] is not None:
+                out[key] = values[0]
+        else:
+            per_volume[key] = values
+    infos = [m.sidecar.get("DcmTether", {}) for m in members]
+    info: dict = {"Version": infos[0].get("Version"), "MergedFrom": [m.series_id for m in members]}
+    sources = list(dict.fromkeys(i["DiffusionSource"] for i in infos if "DiffusionSource" in i))
+    if sources:
+        info["DiffusionSource"] = "; ".join(sources)
+    info["PerVolume"] = per_volume
+    out["DcmTether"] = info
+    return out
+
+
+def _merged_data(members: list[_Member]) -> tuple[np.ndarray, tuple[float, float] | None, bool]:
+    """4D data, NIfTI scaling, and whether the values had to be rescaled to float."""
+    images = [nib.load(m.nifti) for m in members]
+    # nibabel moves scl_slope/scl_inter from the header to the array proxy (1, 0 if unset)
+    scalings = {(float(img.dataobj.slope), float(img.dataobj.inter)) for img in images}
+    dtypes = {img.get_data_dtype() for img in images}
+    if len(scalings) == 1 and len(dtypes) == 1:
+        arrays = [np.asanyarray(img.dataobj.get_unscaled()) for img in images]
+        scaling = scalings.pop()
+        scaling = None if scaling == (1.0, 0.0) else scaling
+        rescaled = False
+    else:  # different stored values: the real values, as float
+        arrays = [np.asanyarray(img.dataobj, dtype=np.float32) for img in images]
+        scaling, rescaled = None, True
+    arrays = [a if a.ndim == 4 else a[..., np.newaxis] for a in arrays]
+    return np.concatenate(arrays, axis=3), scaling, rescaled
+
+
+def _output_path(dataset: Path, first: _Member) -> Path:
+    relative = first.nifti.relative_to(dataset)
+    stem, suffix = relative.name.removesuffix(NIFTI_SUFFIX).rsplit("_", 1)
+    name = f"{stem}_desc-merged_{suffix}{NIFTI_SUFFIX}"
+    return dataset / DERIVATIVES_DIR / MERGED_DIR / relative.parent / name
+
+
+def write_group(dataset: Path, members: list[_Member]) -> MergedGroup:
+    ids = tuple(m.series_id for m in members)
+    n_volumes = sum(m.n_volumes for m in members)
+    nifti_path = _output_path(dataset, members[0])
+    sidecar_path = nifti_path.with_name(nifti_path.name.removesuffix(NIFTI_SUFFIX) + SIDECAR_SUFFIX)
+    if nifti_path.exists() or sidecar_path.exists():
+        return MergedGroup(ids, n_volumes, skipped="already merged")
+    data, scaling, rescaled = _merged_data(members)
+    info = _merged_sidecar(members)
+    if rescaled:
+        info["DcmTether"]["Rescaled"] = True  # stored values differed: real values as float
+    nifti_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        write_nifti(nifti_path, data, members[0].affine, scaling)
+        sidecar_path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+    except BaseException:
+        nifti_path.unlink(missing_ok=True)
+        sidecar_path.unlink(missing_ok=True)
+        raise
+    return MergedGroup(ids, n_volumes, nifti_path)
+
+
+def merge(dataset: Path, ids: list[int] | None = None) -> MergeResult:
+    """Merge the automatic groups of ``dataset``, or the series ``ids`` as one group."""
+    members = _members(dataset)
+    if ids is None:
+        candidates = [m for m in members.values() if isinstance(m, _Member)]
+        results = []
+        for group, reason in find_groups(candidates):
+            if reason is None:
+                results.append(write_group(dataset, group))
+            else:
+                n = sum(m.n_volumes for m in group)
+                results.append(MergedGroup(tuple(m.series_id for m in group), n, skipped=reason))
+        return MergeResult(tuple(results))
+
+    if len(set(ids)) < 2:
+        raise MergeError("name at least two different series")
+    chosen = []
+    for series_id in sorted(set(ids)):
+        member = members.get(series_id)
+        if member is None:
+            raise MergeError(f"series #{series_id} is not a converted series")
+        if isinstance(member, str):
+            raise MergeError(f"series #{series_id}: {member}")
+        chosen.append(member)
+    chosen = _ordered(chosen)
+    reason = _mismatch(chosen)
+    if reason is not None:
+        raise MergeError(f"series cannot be merged: {reason}")
+    return MergeResult((write_group(dataset, chosen),))

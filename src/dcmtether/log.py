@@ -32,6 +32,7 @@ ALLOWED_FIELDS = frozenset(
         "command",
         "event",
         "series_id",
+        "series_ids",
         "status",
         "reason",
         "count",

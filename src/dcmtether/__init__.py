@@ -15,6 +15,7 @@ from dcmtether.api import (
     ScanSummary,
     SeriesInfo,
     compare,
+    merge_series,
     run,
     scan,
     to_dcm,
@@ -29,6 +30,7 @@ from dcmtether.derived_mr import DerivedMRResult
 from dcmtether.errors import DcmtetherError
 from dcmtether.forward import ConversionError, Outcome
 from dcmtether.manifest import ManifestError
+from dcmtether.merge import MergedGroup, MergeError, MergeResult
 from dcmtether.pmap import PmapResult
 from dcmtether.reverse import ReverseError
 from dcmtether.scanning import Status
@@ -44,6 +46,9 @@ __all__ = [
     "DerivedMRResult",
     "Difference",
     "ManifestError",
+    "MergeError",
+    "MergeResult",
+    "MergedGroup",
     "Outcome",
     "PmapResult",
     "Report",
@@ -56,6 +61,7 @@ __all__ = [
     "TetherError",
     "__version__",
     "compare",
+    "merge_series",
     "run",
     "scan",
     "to_dcm",
