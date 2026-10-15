@@ -19,6 +19,13 @@ file formats).
   only series whose b-values differ between volumes). `ivim` also counts as a diffusion word
   for bare `fa` (FA maps).
 
+### Fixed
+
+- Diffusion b-values and gradients are now written to the sidecar for every diffusion series
+  (`dwi` or a diffusion map), always under `DcmTether.PerVolume` (one entry per volume), also
+  for a series with a single b-value (e.g. one series per IVIM b-value). Before, they only
+  appeared when they told the volumes of a 4D series apart.
+
 ## [0.1.0] - 2026-10-12
 
 First release. Research use only — not for clinical or diagnostic use.
