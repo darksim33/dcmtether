@@ -175,6 +175,36 @@ def test_diffusion_map_suffix_none(image_type, text):
 
 
 @pytest.mark.parametrize(
+    ("image_type", "text", "rule"),
+    [
+        (("ORIGINAL", "PRIMARY", "DIFFUSION", "NONE"), "T2_tse", "imagetype:diffusion"),
+        (("original", "primary", "diffusion"), None, "imagetype:diffusion"),
+        (("ORIGINAL", "PRIMARY", "M", "ND"), "IVIM_abdomen", "keyword:ivim"),
+        ((), "abd_ivim_10b", "keyword:ivim"),
+        ((), "ep2d_diff_b800", "keyword:diff"),
+        ((), "Diffusion weighted", "keyword:diff"),
+        ((), "DWI_bh", "keyword:dwi"),
+        ((), "dti_30dir", "keyword:dti"),
+    ],
+)
+def test_dwi_suffix(image_type, text, rule):
+    assert naming.dwi_suffix(image_type, text) == naming.Suffix("dwi", rule)
+
+
+@pytest.mark.parametrize(
+    ("image_type", "text"),
+    [
+        (("ORIGINAL", "PRIMARY", "M", "ND"), "T2_tse"),
+        ((), "subtraction difference"),
+        ((), "privim_t1"),  # not at a word start
+        ((), None),
+    ],
+)
+def test_dwi_suffix_none(image_type, text):
+    assert naming.dwi_suffix(image_type, text) is None
+
+
+@pytest.mark.parametrize(
     ("name", "label"),
     [
         ("MÜLLER^THOMAS", "MuellerThomas"),

@@ -836,6 +836,15 @@ ADC_IMAGE_TYPE = ["DERIVED", "PRIMARY", "DIFFUSION", "ADC"]
         ("ep2d_diff", ADC_IMAGE_TYPE, "ADC", "imagetype:adc"),
         ("ep2d_diff_ADC", None, "ADC", "keyword:adc"),
         ("DTI_FA", None, "FA", "keyword:fa"),
+        # single-b-value diffusion series: no differing b-values to find
+        (
+            "abdomen_b800",
+            ["ORIGINAL", "PRIMARY", "DIFFUSION", "NONE"],
+            "dwi",
+            "imagetype:diffusion",
+        ),
+        ("IVIM_b50", None, "dwi", "keyword:ivim"),
+        ("ep2d_diff_b1000", None, "dwi", "keyword:diff"),
     ],
 )
 def test_diffusion_maps_go_to_dwi_with_their_own_suffix(
