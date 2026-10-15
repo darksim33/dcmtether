@@ -88,7 +88,8 @@ Merge series of one measurement (e.g. one series per IVIM b-value) into one 4D N
 `dataset/derivatives/merged/` (experimental; see [usage](usage.md)). Without `ids`, groups are
 found automatically. `MergeResult`: `groups`, `merged` and `skipped` (lists of `MergedGroup`:
 `series_ids`, `n_volumes`, `path`, `skipped` (the reason a group was not written),
-`tether_path` and `no_tether` (the reason no `*.tether.json` was written)).
+`tether_path`, `no_tether` (the reason no `*.tether.json` was written) and `rule`
+(`"siemens-xa-split"`, `"diffusion-protocol"` or `"ids"`)).
 Raises `MergeError` if the series named in `ids` cannot be merged.
 
 ## Back to DICOM

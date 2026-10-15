@@ -76,12 +76,17 @@ identical to the originals, in their folders relative to a common one. Only use 
 voxels: the rebuilt files keep the original UIDs. Derivatives (`to-seg`, `to-pmap`, `to-mr`)
 need a 3D source: use one of the single series.
 
-Without `--ids`, groups are found automatically: converted single-volume `dwi` series of the
-same subject, session, study, frame of reference and voxel grid (two acquisitions at
-different positions are two groups), with the same protocol
-(ProtocolName, else SeriesDescription, without b-value tokens such as `b50`) and echo time, and
-a different b-value or gradient each (a repeated measurement is not merged). `--ids` merges the
-named series; only subject, session, study, frame of reference and voxel grid are checked.
+Without `--ids`, groups are found automatically among converted series of the same subject,
+session, study, frame of reference and voxel grid (two acquisitions at different positions are
+two groups), by two rules in this order:
+
+| Rule (`DcmTether.MergeRule`) | Series |
+|---|---|
+| `siemens-xa-split` | split by Siemens XA from one enhanced acquisition: `MFSPLIT` in ImageType, XA software, the same SeriesTime (as dcm2niix groups XA classic data). Any type: diffusion, echoes, dynamics, …; SeriesNumbers may differ freely. Magnitude, phase and derived images stay apart. |
+| `diffusion-protocol` | single-volume `dwi` series with the same protocol (ProtocolName, else SeriesDescription, without b-value tokens such as `b50`) and echo time, each with another b-value or gradient (a repeated measurement is not merged) |
+
+`--ids` merges the named series (rule `ids`); only subject, session, study, frame of reference
+and voxel grid are checked. SeriesTime is only compared, never written or printed.
 
 ```bash
 uv run dcmtether merge study/
