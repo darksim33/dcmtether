@@ -86,8 +86,8 @@ never to NIfTI order. Version 2 files are still read.
 Readable BIDS-style keys (times in seconds) — not used to rebuild the DICOM, no patient
 identifiers. `DcmTether` holds tool information: `Version`, `SuffixRule`, `AcqSource`
 (SeriesDescription/ProtocolName), `Duplicate` (the `_XX` counter), `DiffusionSource`, `Chunk`,
-and for 4D series `VolumeKey` (the DICOM attribute that tells the volumes apart) and
-`PerVolume` (values that differ between volumes).
+for 4D series `VolumeKey` (the DICOM attribute that tells the volumes apart), and
+`PerVolume` (values that differ between volumes, and diffusion values; see below).
 
 `PerVolume` uses the same keys and units as the top level: times are in seconds, and the
 echo time of an enhanced series (`EffectiveEchoTime`) is listed as `EchoTime`. Attributes
@@ -107,8 +107,13 @@ the vendor private tags, found by private creator:
 | Philips | `Philips Imaging DD 001` (2001,xx03) | `Philips MR Imaging DD 001` (2005,xxB0–xxB2), RL/AP/FH |
 
 `DiffusionSource` then names the tags. GE and Philips gradients are not in patient LPS and are
-listed unconverted under `PerVolume.DiffusionGradientVendor` instead of
+listed unconverted under `DiffusionGradientVendor` instead of
 `DiffusionGradientOrientation`. GE values are used only when the gradient tags are present too.
+Diffusion values are always under `PerVolume`, one entry per volume, also when they are the
+same for every volume or the series has a single volume: one series per IVIM b-value gets
+`"PerVolume": {"DiffusionBValue": [800.0], "DiffusionGradientOrientation": [[1.0, 0.0, 0.0]]}`.
+Images without a gradient (b0, trace) have `null`. Only diffusion series (suffix `dwi` or a
+diffusion map) get them: Philips writes a zero b-value into other images too.
 
 ## Manifest (`manifest.sqlite`, schema 4)
 
