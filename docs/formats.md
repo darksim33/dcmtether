@@ -31,8 +31,14 @@ BIDS-inspired, not BIDS-compliant:
 
 Diffusion maps are recognised by an ImageType value (`ADC`, `EADC`, `FA`, `TRACEW`, `TRACE`),
 else by keywords in the `acq-` text (`adc`, `apparent diffusion`, `trace`, `tracew`,
-`fractional anisotropy`; a bare `fa` only next to `dti`, `dwi`, `diff` or `tensor`, because it
-also means flip angle). They are stored in `dwi/`. A text naming several maps is not used.
+`fractional anisotropy`; a bare `fa` only next to `dti`, `dwi`, `diff`, `ivim` or `tensor`,
+because it also means flip angle). They are stored in `dwi/`. A text naming several maps is not
+used.
+
+Diffusion series are recognised by b-values that differ between volumes, else (e.g. a series
+with a single b-value) by the ImageType value `DIFFUSION`, else by the keywords `dwi`, `dti`,
+`ivim` or `diff` (not `difference`) in the `acq-` text. Map rules are checked first, since
+scanner maps carry `DIFFUSION` too.
 
 Name clashes are never resolved silently:
 

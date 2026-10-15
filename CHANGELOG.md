@@ -7,6 +7,18 @@ file formats).
 
 ## [Unreleased]
 
+### Added
+
+- `--body-part/-b` for `scan` and `run`: list every scanned series with its BodyPartExamined;
+  `SeriesInfo.body_part` in the Python API.
+
+### Changed
+
+- Diffusion series with a single b-value are now named `dwi` too: from ImageType `DIFFUSION`,
+  else the keywords `dwi`, `dti`, `ivim` or `diff` in SeriesDescription/ProtocolName (before:
+  only series whose b-values differ between volumes). `ivim` also counts as a diffusion word
+  for bare `fa` (FA maps).
+
 ## [0.1.0] - 2026-10-12
 
 First release. Research use only — not for clinical or diagnostic use.

@@ -64,7 +64,8 @@ Index and classify the series under `source` (headers only) and write the manife
 
 `ScanSummary`: `n_files`, `n_instances` (DICOM files), `n_skipped`, `skipped` (reason → number
 of files), `series` and `count(status)`. Each entry of `series` is a `SeriesInfo`: `id`,
-`status` (a `Status`: `SUPPORTED`, `SPLIT` or `UNSUPPORTED`), `reasons` and `n_instances`.
+`status` (a `Status`: `SUPPORTED`, `SPLIT` or `UNSUPPORTED`), `reasons`, `n_instances` and
+`body_part` (BodyPartExamined, or `None`).
 
 ```python
 summary = dt.scan("dicom/", "study/")

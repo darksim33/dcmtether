@@ -21,7 +21,7 @@ your tool ──▶ label map / ADC map on the NIfTI grid
 
 ## Converting
 
-### `run SOURCE [--output/-o DATASET] [--full-name/-f] [--verbose/-v]`
+### `run SOURCE [--output/-o DATASET] [--full-name/-f] [--body-part/-b] [--verbose/-v]`
 
 Scans SOURCE (headers only) and converts every convertible series into DATASET, which is SOURCE
 itself unless `--output` names another directory. In-place, the dataset's own entries
@@ -33,7 +33,11 @@ folder called `logs` is read as usual.
 Safe to run again on the same SOURCE and DATASET: new series are added (with new ids), series that are not converted
 yet are rescanned, failed ones are retried. Converted series are never touched; if their source
 files changed, that is reported (delete their outputs and manifest entry to redo them). A
-different SOURCE for an existing dataset is refused. `--verbose` lists every series.
+different SOURCE for an existing dataset is refused. `--verbose` lists every converted series.
+
+`--body-part` lists every scanned series with its status and BodyPartExamined, e.g.
+`series #3 (24 instances, body part ABDOMEN) supported` (`body part not set` if the tag is
+empty). On a later run only the new and rescanned series are listed.
 
 `--full-name` builds subject labels from the full family, given and middle name, digits
 included (`sub-MuellerThomas`, `sub-Phantom2Qa`), instead of the first 5 letters of family and
@@ -46,7 +50,7 @@ limit). Short options combine: `run SOURCE -fv`.
 
 Exit code 1 if any series failed.
 
-### `scan SOURCE DATASET` and `to-nii DATASET [--full-name/-f] [--verbose/-v]`
+### `scan SOURCE DATASET [--body-part/-b]` and `to-nii DATASET [--full-name/-f] [--verbose/-v]`
 
 The two halves of `run`: `scan` creates the manifest (and refuses an existing one), `to-nii`
 converts what the manifest marks `supported` or `split`.
@@ -87,7 +91,10 @@ change → new UIDs), reference their source images, and are labelled "RESEARCH 
 Only 3D sources are supported so far.
 
 Metadata uses the [dcmqi](https://qiicr.org/dcmqi/) JSON templates; examples:
-[`seg-template.json`](examples/seg-template.json), [`pmap-template.json`](examples/pmap-template.json).
+[`seg-template.json`](examples/seg-template.json),
+[`seg-template-abdomen.json`](examples/seg-template-abdomen.json), [`pmap-template.json`](examples/pmap-template.json).
+How to write your own segmentation template, and where to find the codes:
+[segmentation templates](seg-templates.md).
 
 ### `to-seg NIFTI LABELS METADATA OUTPUT`
 
