@@ -66,6 +66,34 @@ classifying, converting). They show counts only, never file or patient names, an
 when done. They are not shown when the output is redirected; set `TQDM_DISABLE=1` to turn them
 off in a terminal as well.
 
+### `merge DATASET [--ids 4,5,6]` (experimental)
+
+Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own and stays
+that way; `merge` adds one 4D NIfTI + sidecar + `*.tether.json` per measurement under
+`DATASET/derivatives/merged/sub-…/ses-…/dwi/` (`…_desc-merged_dwi.nii.gz`). The merged
+tether combines the series' own: `to-dcm` on the merged NIfTI writes all source series back,
+identical to the originals, in their folders relative to a common one. Only use it on unchanged
+voxels: the rebuilt files keep the original UIDs. Derivatives (`to-seg`, `to-pmap`, `to-mr`)
+need a 3D source: use one of the single series.
+
+Without `--ids`, groups are found automatically: converted single-volume `dwi` series of the
+same subject, session, study, frame of reference and voxel grid (two acquisitions at
+different positions are two groups), with the same protocol
+(ProtocolName, else SeriesDescription, without b-value tokens such as `b50`) and echo time, and
+a different b-value or gradient each (a repeated measurement is not merged). `--ids` merges the
+named series; only subject, session, study, frame of reference and voxel grid are checked.
+
+```bash
+uv run dcmtether merge study/
+# Merged series #5, #6, #7 (3 volumes).
+```
+
+Volumes follow SeriesNumber. The sidecar lists the source ids under `DcmTether.MergedFrom` and
+what differs between the series (b-values, SeriesNumber, …) under `DcmTether.PerVolume`.
+Series with different stored scaling are merged as float32 (`DcmTether.Rescaled`) and get no
+`*.tether.json`. Existing
+merged files are never overwritten. Exit code 1 if a group named with `--ids` was not merged.
+
 ## Back to DICOM
 
 ### `to-dcm NIFTI OUTPUT`

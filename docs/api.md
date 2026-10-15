@@ -82,6 +82,15 @@ Convert every scanned series of `dataset` that is not converted yet; failed ones
 `message`, `outputs`, `warning`), and from them `converted` (ids), `failed` (id → reason),
 `warnings` (id → text, e.g. a numbered duplicate name) and `ok`.
 
+### `merge_series(dataset, ids=None, *, log=True)` → `MergeResult`
+
+Merge series of one measurement (e.g. one series per IVIM b-value) into one 4D NIfTI under
+`dataset/derivatives/merged/` (experimental; see [usage](usage.md)). Without `ids`, groups are
+found automatically. `MergeResult`: `groups`, `merged` and `skipped` (lists of `MergedGroup`:
+`series_ids`, `n_volumes`, `path`, `skipped` (the reason a group was not written),
+`tether_path` and `no_tether` (the reason no `*.tether.json` was written)).
+Raises `MergeError` if the series named in `ids` cannot be merged.
+
 ## Back to DICOM
 
 ### `to_dcm(nifti, output, *, log=True)` → `DcmResult`
@@ -131,6 +140,7 @@ dt.to_pmap(nifti, "adc.nii.gz", template, "adc.dcm")
 | `ManifestError` | no manifest, a manifest that already exists, another SOURCE, a SOURCE with `sub-*` folders on the first in-place run, `full_name` on a short-label dataset |
 | `ConversionError` | a series cannot be converted (normally reported per series, not raised) |
 | `ReverseError` | `to_dcm`: the NIfTI does not match its tether, or output files exist |
+| `MergeError` | `merge_series`: named series that are not converted, split, or not on one grid |
 | `TetherError` | a `*.tether.json` is unreadable, foreign, too old or damaged |
 | `DerivedError` | `to_seg`, `to_pmap`, `to_mr`: bad template, derivative off the grid, unsupported source, output exists |
 

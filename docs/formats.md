@@ -7,6 +7,7 @@ dataset/
 ├── manifest.sqlite                 scan and conversion records
 ├── README.md                       identifying-data warning, file name entities
 ├── logs/dcmtether_<time>.jsonl     structured log (no PHI)
+├── derivatives/merged/sub-…/…      merged series (`merge`; NIfTI + sidecar + tether)
 └── sub-<subject>/ses-<session>/
     ├── anat/<stem>.nii.gz          voxels (raw stored values, closest RAS)
     ├── anat/<stem>.json            human-readable sidecar (BIDS-style keys)
@@ -81,6 +82,10 @@ without pixel data:
 Indices always refer to DICOM order (rows, columns, slices along the slice normal[, volumes]),
 never to NIfTI order. Version 2 files are still read.
 
+A merged tether (`merge`) has the same format. It holds the instances of several series:
+`source` describes the first and adds `n_series`; `file_name` starts with the series' folder
+relative to a common one; series *k*'s volumes follow those of the series before it.
+
 ## Sidecar (`<stem>.json`)
 
 Readable BIDS-style keys (times in seconds) — not used to rebuild the DICOM, no patient
@@ -132,10 +137,10 @@ Older manifests are upgraded in place when opened. The manifest holds UIDs, Pati
 `logs/dcmtether_<time>.jsonl`: one JSON object per line, written by every command that works
 on the dataset. `<time>` is the UTC start of the command (`YYYYMMDDTHHMMSS`; `_2`, `_3`, …
 are added within the same second). `run`, `scan` and `to-nii` start a file each; `to-dcm`,
-`to-seg`, `to-pmap` and `to-mr` append to the newest one, or start one if there is none. A
+`to-seg`, `to-pmap`, `to-mr` and `merge` append to the newest one, or start one if there is none. A
 `logs/dcmtether.jsonl` from before the names had a timestamp is left as it is. Fields come from a fixed allowlist (`dcmtether.log.ALLOWED_FIELDS`): `time`,
-`version`, `command`, `event`, `series_id`, `status`, `reason`, counts (`count`, `outputs`,
+`version`, `command`, `event`, `series_id`, `series_ids`, `status`, `reason`, counts (`count`, `outputs`,
 `n_files`, `n_series`, `n_converted`, `n_failed`, …), lists of series ids (`new`,
 `rescanned`, `unchanged`, `changed_after_conversion`, `missing`) and `kind`. Events: `start`,
 `end`, `error`, `scanned`, `manifest_updated`, `series_classified`, `series_converted`,
-`series_failed`, `written`.
+`series_failed`, `written`, `merged`, `not_merged`.

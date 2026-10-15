@@ -9,6 +9,11 @@ file formats).
 
 ### Added
 
+- `merge DATASET [--ids …]` / `merge_series` (experimental): merge series of one measurement
+  (e.g. one series per IVIM b-value) into one 4D NIfTI under `derivatives/merged/`; groups are
+  found automatically or named by manifest id. The converted series stay as they are; a
+  combined `*.tether.json` lets `to-dcm` write all source series back from the merged file.
+
 - `--body-part/-b` for `scan` and `run`: list every scanned series with its BodyPartExamined;
   `SeriesInfo.body_part` in the Python API.
 
