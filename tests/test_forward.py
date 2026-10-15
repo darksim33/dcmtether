@@ -225,6 +225,48 @@ def test_private_tag_diffusion_goes_to_dwi(tmp_path, vendor, gradient_key, b0_gr
     assert not other & per_volume.keys()
 
 
+@pytest.mark.parametrize(
+    ("kind", "gradient_key", "source"),
+    [
+        ("diffusion", "DiffusionGradientOrientation", None),
+        ("diffusion_siemens", "DiffusionGradientOrientation", "siemens"),
+        ("diffusion_ge", "DiffusionGradientVendor", "ge"),
+        ("diffusion_philips", "DiffusionGradientVendor", "philips"),
+    ],
+)
+def test_single_b_value_series_has_it_in_the_sidecar(tmp_path, kind, gradient_key, source):
+    """One series per b-value (e.g. IVIM): listed under PerVolume like in a 4D series."""
+    series = make_4d(n_volumes=3, kind=kind)
+    series.datasets[:] = [ds for ds in series.datasets if (ds.InstanceNumber - 1) // 5 == 1]
+    for ds in series.datasets:
+        ds.ImageType = ["ORIGINAL", "PRIMARY", "DIFFUSION", "NONE"]
+    dataset = _dataset(tmp_path, series)
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    nifti = _single_output(dataset)
+    assert nifti.parts[-2] == "dwi"
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    info = sidecar["DcmTether"]
+    assert info["PerVolume"] == {"DiffusionBValue": [1000.0], gradient_key: [[1.0, 0.0, 0.0]]}
+    assert "VolumeKey" not in info
+    assert "DiffusionBValue" not in sidecar
+    assert info.get("DiffusionSource", "standard").lower().startswith(source or "standard")
+
+
+def test_zero_b_value_of_a_non_diffusion_series_is_not_listed(tmp_path):
+    """Philips writes b = 0 into anatomical images too: only diffusion series list b-values."""
+    series = make_series(SeriesSpec(series_description="t1_tse"))
+    for ds in series.datasets:
+        ds.Manufacturer = "Philips Medical Systems"
+        ds.private_block(0x2001, "Philips Imaging DD 001", create=True).add_new(0x03, "FL", 0.0)
+    dataset = _dataset(tmp_path, series)
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    nifti = _single_output(dataset)
+    assert nifti.parts[-2] == "anat"
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    assert "PerVolume" not in sidecar["DcmTether"]
+    assert "DiffusionSource" not in sidecar["DcmTether"]
+
+
 @pytest.mark.parametrize("make", [make_localizer, make_two_planes], ids=["localizer", "two-planes"])
 def test_split_series_become_chunks(tmp_path, make):
     series = make()
