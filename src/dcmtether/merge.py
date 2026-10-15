@@ -8,10 +8,18 @@ source series back, identical to the originals. Only for unchanged voxels: the f
 original UIDs. Series merged as float (different stored scaling) get no tether.json.
 
 Groups are found automatically, or named by manifest id. Every group must share subject,
-session, study, frame of reference and voxel grid. Automatic groups are stricter: one per
-voxel grid, of single-volume diffusion series (suffix ``dwi``) with the same protocol
-(ProtocolName, else SeriesDescription, without b-value tokens such as ``b50``) and echo time,
-whose b-value and gradient differ from each other (a repeated measurement is not merged).
+session, study, frame of reference and voxel grid. Automatic groups, one per voxel grid, come
+from two rules, in this order:
+
+- Siemens XA split (``siemens-xa-split``): series that Siemens XA split from one enhanced
+  acquisition (``MFSPLIT`` in ImageType, XA software) with the same SeriesTime, as dcm2niix
+  groups XA classic data; any series type (diffusion, echoes, dynamics, ...), ORIGINAL/DERIVED
+  and the pixel component (magnitude, phase, ...) kept apart. SeriesNumbers may differ freely.
+- Diffusion protocol (``diffusion-protocol``): single-volume diffusion series (suffix ``dwi``)
+  with the same protocol (ProtocolName, else SeriesDescription, without b-value tokens such as
+  ``b50``) and echo time, whose b-value and gradient differ from each other (a repeated
+  measurement is not merged).
+
 Volumes are ordered by SeriesNumber. Messages name series by manifest id only.
 """
 
@@ -41,6 +49,12 @@ class MergeError(DcmtetherError, ValueError):
     pass
 
 
+#: Grouping rules, recorded in the merged sidecar (``DcmTether.MergeRule``).
+XA_SPLIT = "siemens-xa-split"
+DIFFUSION_PROTOCOL = "diffusion-protocol"
+IDS = "ids"
+
+
 @dataclass(frozen=True)
 class MergedGroup:
     #: Manifest ids, in volume order (SeriesNumber).
@@ -54,6 +68,8 @@ class MergedGroup:
     tether_path: Path | None = None
     #: Why no tether.json was written.
     no_tether: str | None = None
+    #: How the group was found: :data:`XA_SPLIT`, :data:`DIFFUSION_PROTOCOL` or :data:`IDS`.
+    rule: str = ""
 
 
 @dataclass(frozen=True)
@@ -84,6 +100,8 @@ class _Member:
     tether: Path
     #: Source folder, POSIX, relative to the source root.
     source_dir: str
+    #: SeriesTime: a grouping key only, never printed, logged or written (PHI rules).
+    series_time: str | None = None
 
     @property
     def n_volumes(self) -> int:
@@ -101,10 +119,9 @@ class _Member:
         return values
 
 
-def _frame_of_reference(document: dict) -> str | None:
-    element = document["shared"].get("00200052") or document["instances"][0]["elements"].get(
-        "00200052"
-    )
+def _first_value(document: dict, tag: str) -> str | None:
+    """First value of an element: shared, else of the first instance."""
+    element = document["shared"].get(tag) or document["instances"][0]["elements"].get(tag)
     return (element.get("Value") or [None])[0] if element else None
 
 
@@ -142,11 +159,12 @@ def _members(dataset: Path) -> dict[int, _Member | str]:
             row["study_instance_uid"],
             nifti,
             sidecar,
-            _frame_of_reference(document),
+            _first_value(document, "00200052"),  # FrameOfReferenceUID
             tuple(int(n) for n in header.get_data_shape()),
             header.get_best_affine(),
             dataset / row["tether_path"],
             row["source_dir"],
+            _first_value(document, "00080031"),  # SeriesTime
         )
     return members
 
@@ -192,19 +210,58 @@ def _diffusion_key(member: _Member) -> tuple:
     return (b_value, None if gradient is None else tuple(gradient))
 
 
-def find_groups(members: list[_Member]) -> list[tuple[list[_Member], str | None]]:
-    """Automatic groups (see the module docstring), each with a reason if it is not merged."""
+def _grid(m: _Member) -> tuple:
+    """Separates acquisitions of one protocol at different positions."""
+    return (m.shape[:3], tuple(np.round(m.affine, 2).ravel().tolist()))
+
+
+def _image_type(m: _Member) -> list[str]:
+    value = m.sidecar.get("ImageType") or []
+    return [str(v).upper() for v in ([value] if isinstance(value, str) else value)]
+
+
+def _xa_split(m: _Member) -> bool:
+    """A classic series that Siemens XA split from one enhanced acquisition."""
+    return (
+        "MFSPLIT" in _image_type(m)
+        and "SIEMENS" in str(m.sidecar.get("Manufacturer", "")).upper()
+        and "XA" in str(m.sidecar.get("SoftwareVersions", "")).upper()
+        and m.series_time is not None
+    )
+
+
+def _xa_split_groups(members: list[_Member]) -> list[list[_Member]]:
+    """Series of one XA acquisition: same SeriesTime (as dcm2niix groups XA classic data)."""
     by_key: dict[tuple, list[_Member]] = defaultdict(list)
     for m in members:
+        if not _xa_split(m):
+            continue
+        image_type = _image_type(m)
+        # ORIGINAL/DERIVED and the pixel component (M, P, R, I) keep e.g. phase apart
+        kind = (tuple(image_type[:1]), tuple(image_type[2:3]))
+        key = (m.subject, m.session, m.study, m.frame_of_reference, m.series_time, kind, _grid(m))
+        by_key[key].append(m)
+    return [found for found in by_key.values() if len(found) > 1]
+
+
+def find_groups(members: list[_Member]) -> list[tuple[list[_Member], str | None, str]]:
+    """Automatic groups (see the module docstring): members, the reason a group is not merged
+    (or ``None``), and the rule that found it."""
+    groups = []
+    for found in _xa_split_groups(members):
+        found = _ordered(found)
+        groups.append((found, _mismatch(found), XA_SPLIT))
+    taken = {m.series_id for found, _, _ in groups for m in found}
+    by_key: dict[tuple, list[_Member]] = defaultdict(list)
+    for m in members:
+        if m.series_id in taken:
+            continue
         protocol = _protocol(m)
         if not m.is_dwi or m.n_volumes != 1 or protocol is None:
             continue
-        # the grid separates acquisitions of one protocol at different positions
-        grid = (m.shape[:3], tuple(np.round(m.affine, 2).ravel().tolist()))
         echo_time = m.sidecar.get("EchoTime")
-        key = (m.subject, m.session, m.study, m.frame_of_reference, protocol, echo_time, grid)
+        key = (m.subject, m.session, m.study, m.frame_of_reference, protocol, echo_time, _grid(m))
         by_key[key].append(m)
-    groups = []
     for found in by_key.values():
         if len(found) < 2:
             continue
@@ -215,7 +272,7 @@ def find_groups(members: list[_Member]) -> list[tuple[list[_Member], str | None]
             reason = "b-value missing"
         if reason is None and len(set(diffusion)) < len(diffusion):
             reason = "b-values repeat (a repeated measurement?)"
-        groups.append((found, reason))
+        groups.append((found, reason, DIFFUSION_PROTOCOL))
     return sorted(groups, key=lambda g: g[0][0].series_id)
 
 
@@ -279,7 +336,7 @@ def _merged_tether(members: list[_Member]) -> dict:
     return tether.combine([tether.load(m.tether) for m in members], prefixes)
 
 
-def write_group(dataset: Path, members: list[_Member]) -> MergedGroup:
+def write_group(dataset: Path, members: list[_Member], rule: str) -> MergedGroup:
     ids = tuple(m.series_id for m in members)
     n_volumes = sum(m.n_volumes for m in members)
     nifti_path = _output_path(dataset, members[0])
@@ -288,9 +345,10 @@ def write_group(dataset: Path, members: list[_Member]) -> MergedGroup:
     tether_path = nifti_path.with_name(stem + tether.TETHER_SUFFIX)
     targets = (nifti_path, sidecar_path, tether_path)
     if any(t.exists() for t in targets):
-        return MergedGroup(ids, n_volumes, skipped="already merged")
+        return MergedGroup(ids, n_volumes, skipped="already merged", rule=rule)
     data, scaling, rescaled = _merged_data(members)
     info = _merged_sidecar(members)
+    info["DcmTether"]["MergeRule"] = rule
     document, no_tether = None, None
     if rescaled:
         info["DcmTether"]["Rescaled"] = True  # stored values differed: real values as float
@@ -311,7 +369,9 @@ def write_group(dataset: Path, members: list[_Member]) -> MergedGroup:
             target.unlink(missing_ok=True)
         raise
     written = tether_path if document is not None else None
-    return MergedGroup(ids, n_volumes, nifti_path, tether_path=written, no_tether=no_tether)
+    return MergedGroup(
+        ids, n_volumes, nifti_path, tether_path=written, no_tether=no_tether, rule=rule
+    )
 
 
 def merge(dataset: Path, ids: list[int] | None = None) -> MergeResult:
@@ -320,12 +380,13 @@ def merge(dataset: Path, ids: list[int] | None = None) -> MergeResult:
     if ids is None:
         candidates = [m for m in members.values() if isinstance(m, _Member)]
         results = []
-        for group, reason in find_groups(candidates):
+        for group, reason, rule in find_groups(candidates):
             if reason is None:
-                results.append(write_group(dataset, group))
+                results.append(write_group(dataset, group, rule))
             else:
                 n = sum(m.n_volumes for m in group)
-                results.append(MergedGroup(tuple(m.series_id for m in group), n, skipped=reason))
+                found = tuple(m.series_id for m in group)
+                results.append(MergedGroup(found, n, skipped=reason, rule=rule))
         return MergeResult(tuple(results))
 
     if len(set(ids)) < 2:
@@ -342,4 +403,4 @@ def merge(dataset: Path, ids: list[int] | None = None) -> MergeResult:
     reason = _mismatch(chosen)
     if reason is not None:
         raise MergeError(f"series cannot be merged: {reason}")
-    return MergeResult((write_group(dataset, chosen),))
+    return MergeResult((write_group(dataset, chosen, IDS),))
