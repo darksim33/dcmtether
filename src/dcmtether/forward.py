@@ -93,7 +93,7 @@ class Planned:
 
     @property
     def datatype(self) -> str:
-        diffusion = self.suffix == DWI_SUFFIX or self.suffix.value in naming.DIFFUSION_MAP_SUFFIXES
+        diffusion = self.suffix.value == "dwi" or self.suffix.value in naming.DIFFUSION_MAP_SUFFIXES
         return DWI_DIR if diffusion else DATATYPE_DIR
 
     @property
@@ -307,6 +307,7 @@ def plan_labels(
             DWI_SUFFIX
             if item.diffusion
             else naming.diffusion_map_suffix(item.image_type, text)
+            or naming.dwi_suffix(item.image_type, text)
             or naming.contrast_suffix(
                 text, item.repetition_time, item.echo_time, item.inversion_time
             )
@@ -736,10 +737,11 @@ coordinates and are listed unconverted as `DiffusionGradientVendor`.
   manifest order, recorded in the sidecar under `DcmTether.Duplicate`.
 - `chunk-`: one per image plane when a series holds several (e.g. localizers), numbered in
   InstanceNumber order.
-- suffix: `dwi` for diffusion series; `ADC`, `eADC`, `FA`, `TRACE` for diffusion maps calculated
-  by the scanner (from ImageType, else keywords; stored in `dwi/`); else `T1w`, `T2w`, `PDw`,
-  `FLAIR` from keywords in the same text as `acq-`, or from TR/TE/TI, else `MR`; the rule used
-  is recorded in the sidecar under `DcmTether.SuffixRule`.
+- suffix: `dwi` for diffusion series (b-values that differ between volumes, else ImageType
+  `DIFFUSION`, else keywords `dwi`, `dti`, `ivim`, `diff`); `ADC`, `eADC`, `FA`, `TRACE` for
+  diffusion maps calculated by the scanner (from ImageType, else keywords; stored in `dwi/`);
+  else `T1w`, `T2w`, `PDw`, `FLAIR` from keywords in the same text as `acq-`, or from TR/TE/TI,
+  else `MR`; the rule used is recorded in the sidecar under `DcmTether.SuffixRule`.
 """
 
 

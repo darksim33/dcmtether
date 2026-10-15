@@ -31,6 +31,12 @@ _full_name = click.option(
     help="Use the full patient name in subject labels instead of 5+5 letters; fixed for a "
     "dataset on its first conversion.",
 )
+_body_part = click.option(
+    "--body-part",
+    "-b",
+    is_flag=True,
+    help="List every scanned series with its BodyPartExamined.",
+)
 
 
 def _progress(iterable: Iterable, **kwargs) -> Iterable:
@@ -57,8 +63,11 @@ def main() -> None:
 # --- scanning and conversion -------------------------------------------------------------------
 
 
-def _report_scan(summary: ScanSummary, only: set[int] | None = None) -> None:
-    """Counts, then the non-supported series (by manifest id) and the skipped files."""
+def _report_scan(
+    summary: ScanSummary, only: set[int] | None = None, body_part: bool = False
+) -> None:
+    """Counts, then the non-supported series (by manifest id; every series with
+    ``body_part``) and the skipped files."""
     click.echo(
         f"Scanned {summary.n_files} files: {summary.n_instances} DICOM instances in "
         f"{len(summary.series)} series, {plural(summary.n_skipped, 'file')} skipped."
@@ -68,17 +77,21 @@ def _report_scan(summary: ScanSummary, only: set[int] | None = None) -> None:
     for series in summary.series:
         if only is not None and series.id not in only:
             continue
+        if series.status is Status.SUPPORTED and not body_part:
+            continue
+        details = plural(series.n_instances, "instance")
+        if body_part:
+            details += f", body part {series.body_part or 'not set'}"
+        line = f"  series #{series.id} ({details}) {series.status.value}"
         if series.status is not Status.SUPPORTED:
-            click.echo(
-                f"  series #{series.id} ({plural(series.n_instances, 'instance')}) "
-                f"{series.status.value}: {'; '.join(series.reasons)}"
-            )
+            line += f": {'; '.join(series.reasons)}"
+        click.echo(line)
     for reason, n in summary.skipped.items():
         click.echo(f"  skipped {plural(n, 'file')}: {reason}")
 
 
-def _report_update(summary: ScanSummary, update: ManifestUpdate) -> None:
-    _report_scan(summary, only=set(update.new) | set(update.rescanned))
+def _report_update(summary: ScanSummary, update: ManifestUpdate, body_part: bool) -> None:
+    _report_scan(summary, only=set(update.new) | set(update.rescanned), body_part=body_part)
     click.echo(
         f"Manifest: {len(update.new)} new series, {len(update.rescanned)} rescanned, "
         f"{len(update.unchanged)} unchanged."
@@ -112,14 +125,15 @@ def _report_conversion(result: ConversionResult, verbose: bool) -> None:
 @main.command()
 @click.argument("source", type=_existing_dir)
 @click.argument("dataset", type=_output_dir)
-def scan(source: Path, dataset: Path) -> None:
+@_body_part
+def scan(source: Path, dataset: Path, body_part: bool) -> None:
     """Index DICOM series under SOURCE and classify them (headers only).
 
     Writes the manifest to the DATASET directory.
     """
     with _errors():
         summary = api.scan(source, dataset, progress=_progress)
-    _report_scan(summary)
+    _report_scan(summary, body_part=body_part)
     click.echo("Manifest written.")
 
 
@@ -148,8 +162,11 @@ def to_nii(dataset: Path, full_name: bool, verbose: bool) -> None:
     help="Dataset directory (default: SOURCE itself).",
 )
 @_full_name
+@_body_part
 @_verbose
-def run(source: Path, dataset: Path | None, full_name: bool, verbose: bool) -> None:
+def run(
+    source: Path, dataset: Path | None, full_name: bool, body_part: bool, verbose: bool
+) -> None:
     """Scan SOURCE and convert it into a dataset; safe to run again.
 
     The dataset is written into SOURCE unless --output names another directory. The first run
@@ -157,10 +174,12 @@ def run(source: Path, dataset: Path | None, full_name: bool, verbose: bool) -> N
     converted yet and retry failed ones; converted series are never touched (if their source
     files changed, that is reported).
     """
+
+    def scanned(summary: ScanSummary, update: ManifestUpdate) -> None:
+        _report_update(summary, update, body_part)
+
     with _errors():
-        result = api.run(
-            source, dataset, full_name=full_name, progress=_progress, _scanned=_report_update
-        )
+        result = api.run(source, dataset, full_name=full_name, progress=_progress, _scanned=scanned)
     _report_conversion(result.conversion, verbose)
 
 

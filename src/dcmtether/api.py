@@ -45,6 +45,8 @@ class SeriesInfo:
     reasons: tuple[str, ...]
     #: Files, not frames.
     n_instances: int
+    #: BodyPartExamined of the first instance, if set.
+    body_part: str | None = None
 
 
 @dataclass(frozen=True)
@@ -158,7 +160,13 @@ def _check_first_in_place(source: Path, dataset: Path) -> None:
 def _summary(result: ScanResult, ids: dict[str, int]) -> ScanSummary:
     series = sorted(
         (
-            SeriesInfo(ids[s.series_instance_uid], s.status, tuple(s.reasons), len(s.files))
+            SeriesInfo(
+                ids[s.series_instance_uid],
+                s.status,
+                tuple(s.reasons),
+                len(s.files),
+                s.first.body_part_examined,
+            )
             for s in result.series
         ),
         key=lambda info: info.id,

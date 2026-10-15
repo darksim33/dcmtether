@@ -180,7 +180,9 @@ _MAP_KEYWORDS = [
 ]
 # A bare "fa" is also a flip angle ("t1_fa15", "vibe_fa_2"): it needs a diffusion word next to it.
 _FA_TOKEN = re.compile(rf"{_START}fa{_END}", re.I)
-_DIFFUSION_WORD = re.compile(r"dti|dwi|diff|tensor", re.I)
+_DIFFUSION_WORD = re.compile(r"dti|dwi|diff|ivim|tensor", re.I)
+# Words that name a diffusion series; "diff" but not "difference".
+_DWI_KEYWORD = re.compile(rf"{_START}(dwi|dti|ivim|diff(?!eren))", re.I)
 
 
 def diffusion_map_suffix(image_type: tuple[str, ...], text: str | None) -> Suffix | None:
@@ -203,6 +205,20 @@ def diffusion_map_suffix(image_type: tuple[str, ...], text: str | None) -> Suffi
         found.append("FA")
     if len(found) == 1:
         return Suffix(found[0], f"keyword:{found[0].lower()}")
+    return None
+
+
+def dwi_suffix(image_type: tuple[str, ...], text: str | None) -> Suffix | None:
+    """``dwi`` for a diffusion series the scan could not tell from its volumes (e.g. a single
+    b-value), else ``None``: ImageType ``DIFFUSION``, else keywords in ``text`` (``dwi``,
+    ``dti``, ``ivim``, ``diff``). Check :func:`diffusion_map_suffix` first: maps carry
+    ``DIFFUSION`` too.
+    """
+    if "DIFFUSION" in (v.upper() for v in image_type):
+        return Suffix("dwi", "imagetype:diffusion")
+    match = _DWI_KEYWORD.search(text or "")
+    if match:
+        return Suffix("dwi", f"keyword:{match.group(1).lower()}")
     return None
 
 
