@@ -28,7 +28,7 @@ Only the names listed on this page (`dcmtether.__all__`) are the API. Modules su
 - **Logging.** Functions that work on a dataset write the same records to
   `DATASET/logs/dcmtether_<time>.jsonl` as the CLI ([formats](formats.md#log)). Pass
   `log=False` to write none.
-- **Progress.** `scan`, `to_nii` and `run` take `progress=`, a callable used like `tqdm`
+- **Progress.** `scan`, `to_nii`, `run` and `merge_series` take `progress=`, a callable used like `tqdm`
   (`progress(iterable, total=…, desc=…, unit=…)`), e.g. `progress=tqdm.tqdm`. Default: none.
 - Existing files are never overwritten. Research use only.
 
@@ -82,7 +82,7 @@ Convert every scanned series of `dataset` that is not converted yet; failed ones
 `message`, `outputs`, `warning`), and from them `converted` (ids), `failed` (id → reason),
 `warnings` (id → text, e.g. a numbered duplicate name) and `ok`.
 
-### `merge_series(dataset, ids=None, *, log=True)` → `MergeResult`
+### `merge_series(dataset, ids=None, *, log=True, progress=None)` → `MergeResult`
 
 Merge series of one measurement (e.g. one series per IVIM b-value) into one 4D NIfTI under
 `dataset/derivatives/merged/` (experimental; see [usage](usage.md)). Without `ids`, groups are

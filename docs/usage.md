@@ -61,8 +61,8 @@ Each series ends up in one of three states (see [supported inputs](supported-inp
 
 ### Progress
 
-In a terminal, `run`, `scan` and `to-nii` show progress bars on stderr (reading headers,
-classifying, converting). They show counts only, never file or patient names, and disappear
+In a terminal, `run`, `scan`, `to-nii` and `merge` show progress bars on stderr (reading
+headers, classifying, converting, reading series, merging). They show counts only, never file or patient names, and disappear
 when done. They are not shown when the output is redirected; set `TQDM_DISABLE=1` to turn them
 off in a terminal as well.
 

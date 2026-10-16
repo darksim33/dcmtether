@@ -14,7 +14,7 @@ file formats).
   found automatically (Siemens XA split series: `MFSPLIT` + same SeriesTime, any type;
   single-b-value diffusion series of one protocol) or named by manifest id. The converted
   series stay as they are; a combined `*.tether.json` lets `to-dcm` write all source series
-  back from the merged file.
+  back from the merged file. Shows a progress bar in a terminal (`progress=` in the API).
 
 - `--body-part/-b` for `scan` and `run`: list every scanned series with its BodyPartExamined;
   `SeriesInfo.body_part` in the Python API.
