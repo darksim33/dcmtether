@@ -36,6 +36,7 @@ import numpy as np
 from dcmtether import manifest, tether
 from dcmtether.errors import DcmtetherError
 from dcmtether.forward import NIFTI_SUFFIX, SIDECAR_SUFFIX, write_nifti
+from dcmtether.progress import Progress, no_progress
 from dcmtether.scanning import DERIVATIVES_DIR, MERGED_DIR
 
 #: Sidecar keys that are always listed per volume (like in a converted diffusion series).
@@ -125,7 +126,7 @@ def _first_value(document: dict, tag: str) -> str | None:
     return (element.get("Value") or [None])[0] if element else None
 
 
-def _members(dataset: Path) -> dict[int, _Member | str]:
+def _members(dataset: Path, progress: Progress = no_progress) -> dict[int, _Member | str]:
     """Converted series with one output, by id; a reason instead if one cannot be merged."""
     db = manifest.open_manifest(dataset)
     try:
@@ -139,7 +140,7 @@ def _members(dataset: Path) -> dict[int, _Member | str]:
     finally:
         db.close()
     members: dict[int, _Member | str] = {}
-    for row in rows:
+    for row in progress(rows, total=len(rows), desc="Reading series", unit="series"):
         if row["n_outputs"] > 1:
             members[row["id"]] = "split into several NIfTI files"
             continue
@@ -374,13 +375,18 @@ def write_group(dataset: Path, members: list[_Member], rule: str) -> MergedGroup
     )
 
 
-def merge(dataset: Path, ids: list[int] | None = None) -> MergeResult:
+def merge(
+    dataset: Path, ids: list[int] | None = None, progress: Progress = no_progress
+) -> MergeResult:
     """Merge the automatic groups of ``dataset``, or the series ``ids`` as one group."""
-    members = _members(dataset)
+    members = _members(dataset, progress)
     if ids is None:
         candidates = [m for m in members.values() if isinstance(m, _Member)]
+        found_groups = find_groups(candidates)
         results = []
-        for group, reason, rule in find_groups(candidates):
+        for group, reason, rule in progress(
+            found_groups, total=len(found_groups), desc="Merging", unit="group"
+        ):
             if reason is None:
                 results.append(write_group(dataset, group, rule))
             else:
@@ -403,4 +409,5 @@ def merge(dataset: Path, ids: list[int] | None = None) -> MergeResult:
     reason = _mismatch(chosen)
     if reason is not None:
         raise MergeError(f"series cannot be merged: {reason}")
-    return MergeResult((write_group(dataset, chosen, IDS),))
+    [written] = progress([chosen], total=1, desc="Merging", unit="group")
+    return MergeResult((write_group(dataset, written, IDS),))

@@ -207,7 +207,7 @@ def merge(dataset: Path, ids: list[int] | None) -> None:
     Exit code 1 if a named group was not merged.
     """
     with _errors():
-        result = api.merge_series(dataset, ids)
+        result = api.merge_series(dataset, ids, progress=_progress)
     if not result.groups:
         click.echo("No series to merge.")
     for group in result.groups:
