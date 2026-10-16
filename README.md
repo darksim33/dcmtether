@@ -43,3 +43,8 @@ uv run ruff format --check . && uv run ruff check . && uv run pytest
 
 The first test run downloads public test data and the DICOM standard into `.cache/`. Test data
 coverage: `docs/dev/test-data.md`.
+
+## License
+
+[GPL-3.0-or-later](LICENSE). Copyright (C) 2026 Thomas Thiel. Provided without any warranty;
+research use only.
