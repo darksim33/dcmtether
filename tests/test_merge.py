@@ -392,3 +392,21 @@ def test_merge_rule_is_recorded(tmp_path, named):
     ids = list(_ids_by_number(dataset).values()) if named else None
     [group] = dt.merge_series(dataset, ids).groups
     assert group.rule == ("ids" if named else "diffusion-protocol")
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["automatic", "ids"])
+def test_merge_reports_progress(tmp_path, named):
+    dataset = _dataset(tmp_path, _b_series(0, 5), _b_series(50, 6), _b_series(0, 7, "other"))
+    ids = list(_ids_by_number(dataset).values())[:2] if named else None
+    calls = []
+
+    def progress(iterable, **kwargs):
+        calls.append(kwargs)
+        return iterable
+
+    [group] = dt.merge_series(dataset, ids, progress=progress).groups
+    assert group.path is not None
+    assert [(c["desc"], c["unit"], c["total"]) for c in calls] == [
+        ("Reading series", "series", 3),
+        ("Merging", "group", 1),
+    ]
