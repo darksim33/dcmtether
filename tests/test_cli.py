@@ -28,6 +28,8 @@ def test_version(runner):
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
     assert __version__ in result.output
+    assert "Copyright (C) 2026 Thomas Thiel" in result.output
+    assert "NO WARRANTY" in result.output and "GPL-3.0-or-later" in result.output
 
 
 def test_no_command_shows_help_as_usage_error(runner):

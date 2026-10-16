@@ -45,6 +45,15 @@ def _progress(iterable: Iterable, **kwargs) -> Iterable:
     return tqdm(iterable, file=sys.stderr, leave=False, disable=None, dynamic_ncols=True, **kwargs)
 
 
+#: GPL notice for --version (dcmtether is not interactive).
+_NOTICE = (
+    "%(prog)s %(version)s  Copyright (C) 2026 Thomas Thiel\n"
+    "This program comes with ABSOLUTELY NO WARRANTY. It is free software under\n"
+    "GPL-3.0-or-later, and you are welcome to redistribute it under its conditions;\n"
+    "see the LICENSE file or <https://www.gnu.org/licenses/>. Research use only."
+)
+
+
 @contextmanager
 def _errors() -> Iterator[None]:
     """Expected failures become one-line errors (exit code 1); their messages are safe."""
@@ -55,7 +64,7 @@ def _errors() -> Iterator[None]:
 
 
 @click.group(help="Lossless DICOM <-> NIfTI round trips for MRI series. Research use only.")
-@click.version_option(__version__, prog_name="dcmtether")
+@click.version_option(__version__, prog_name="dcmtether", message=_NOTICE)
 def main() -> None:
     pass
 
