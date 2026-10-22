@@ -1,9 +1,12 @@
 """Merge series of one measurement into one 4D NIfTI (experimental).
 
 Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own, with its
-own tether.json, and stays that way. Merging adds one 4D NIfTI, sidecar and tether.json per
-group under ``DATASET/derivatives/merged/`` (same subject/session/datatype folders as the
-dataset). The tether.json combines the series' own: ``to-dcm`` on the merged NIfTI writes the
+own tether.json. Merging adds one 4D NIfTI, sidecar and tether.json per group under
+``DATASET/derivatives/merged/`` (same subject/session/datatype folders as the dataset), or
+``in_place`` beside the series. ``replace`` (in place) then removes the single series' files;
+the manifest records the merged file as the first series' output (the others point to it in
+``merged_into``), so nothing is converted again. Only with a tether.json: without one the single
+series stay. The tether.json combines the series' own: ``to-dcm`` on the merged NIfTI writes the
 source series back, identical to the originals. Only for unchanged voxels: the files keep their
 original UIDs. Series merged as float (different stored scaling) get no tether.json.
 
@@ -71,6 +74,10 @@ class MergedGroup:
     no_tether: str | None = None
     #: How the group was found: :data:`XA_SPLIT`, :data:`DIFFUSION_PROTOCOL` or :data:`IDS`.
     rule: str = ""
+    #: ``replace=True``: the single series' files were removed in favor of the merged ones.
+    replaced: bool = False
+    #: ``replace=True``: why the single series were kept.
+    not_replaced: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +110,7 @@ class _Member:
     source_dir: str
     #: SeriesTime: a grouping key only, never printed, logged or written (PHI rules).
     series_time: str | None = None
+    sidecar_file: Path | None = None
 
     @property
     def n_volumes(self) -> int:
@@ -166,6 +174,7 @@ def _members(dataset: Path, progress: Progress = no_progress) -> dict[int, _Memb
             dataset / row["tether_path"],
             row["source_dir"],
             _first_value(document, "00080031"),  # SeriesTime
+            dataset / row["sidecar_path"],
         )
     return members
 
@@ -321,11 +330,12 @@ def _merged_data(members: list[_Member]) -> tuple[np.ndarray, tuple[float, float
     return np.concatenate(arrays, axis=3), scaling, rescaled
 
 
-def _output_path(dataset: Path, first: _Member) -> Path:
+def _output_path(dataset: Path, first: _Member, in_place: bool) -> Path:
     relative = first.nifti.relative_to(dataset)
     stem, suffix = relative.name.removesuffix(NIFTI_SUFFIX).rsplit("_", 1)
     name = f"{stem}_desc-merged_{suffix}{NIFTI_SUFFIX}"
-    return dataset / DERIVATIVES_DIR / MERGED_DIR / relative.parent / name
+    folder = dataset if in_place else dataset / DERIVATIVES_DIR / MERGED_DIR
+    return folder / relative.parent / name
 
 
 def _merged_tether(members: list[_Member]) -> dict:
@@ -337,10 +347,35 @@ def _merged_tether(members: list[_Member]) -> dict:
     return tether.combine([tether.load(m.tether) for m in members], prefixes)
 
 
-def write_group(dataset: Path, members: list[_Member], rule: str) -> MergedGroup:
+def _replace(dataset: Path, members: list[_Member], targets: tuple[Path, ...], n: int) -> None:
+    """The merged files become the first series' output; then the single files go."""
+    nifti, sidecar, tether_file = (t.relative_to(dataset).as_posix() for t in targets)
+    output = manifest.Output(1, nifti, tether_file, sidecar, n)
+    db = manifest.open_manifest(dataset)
+    try:
+        manifest.record_merged(db, members[0].series_id, [m.series_id for m in members[1:]], output)
+    finally:
+        db.close()
+    for m in members:
+        for path in (m.nifti, m.sidecar_file, m.tether):
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+
+def write_group(
+    dataset: Path,
+    members: list[_Member],
+    rule: str,
+    *,
+    in_place: bool = False,
+    replace: bool = False,
+) -> MergedGroup:
+    """Write one group to ``derivatives/merged`` or, ``in_place``, beside its series;
+    ``replace`` (implies ``in_place``) then removes the single series if a tether.json was
+    written."""
     ids = tuple(m.series_id for m in members)
     n_volumes = sum(m.n_volumes for m in members)
-    nifti_path = _output_path(dataset, members[0])
+    nifti_path = _output_path(dataset, members[0], in_place or replace)
     stem = nifti_path.name.removesuffix(NIFTI_SUFFIX)
     sidecar_path = nifti_path.with_name(stem + SIDECAR_SUFFIX)
     tether_path = nifti_path.with_name(stem + tether.TETHER_SUFFIX)
@@ -370,15 +405,35 @@ def write_group(dataset: Path, members: list[_Member], rule: str) -> MergedGroup
             target.unlink(missing_ok=True)
         raise
     written = tether_path if document is not None else None
+    replaced, not_replaced = False, None
+    if replace and written is None:
+        not_replaced = "no tether.json"
+    elif replace:
+        _replace(dataset, members, targets, n_volumes)
+        replaced = True
     return MergedGroup(
-        ids, n_volumes, nifti_path, tether_path=written, no_tether=no_tether, rule=rule
+        ids,
+        n_volumes,
+        nifti_path,
+        tether_path=written,
+        no_tether=no_tether,
+        rule=rule,
+        replaced=replaced,
+        not_replaced=not_replaced,
     )
 
 
 def merge(
-    dataset: Path, ids: list[int] | None = None, progress: Progress = no_progress
+    dataset: Path,
+    ids: list[int] | None = None,
+    progress: Progress = no_progress,
+    *,
+    in_place: bool = False,
+    replace: bool = False,
 ) -> MergeResult:
-    """Merge the automatic groups of ``dataset``, or the series ``ids`` as one group."""
+    """Merge the automatic groups of ``dataset``, or the series ``ids`` as one group
+    (placement: :func:`write_group`)."""
+    place = {"in_place": in_place, "replace": replace}
     members = _members(dataset, progress)
     if ids is None:
         candidates = [m for m in members.values() if isinstance(m, _Member)]
@@ -388,7 +443,7 @@ def merge(
             found_groups, total=len(found_groups), desc="Merging", unit="group"
         ):
             if reason is None:
-                results.append(write_group(dataset, group, rule))
+                results.append(write_group(dataset, group, rule, **place))
             else:
                 n = sum(m.n_volumes for m in group)
                 found = tuple(m.series_id for m in group)
@@ -410,4 +465,4 @@ def merge(
     if reason is not None:
         raise MergeError(f"series cannot be merged: {reason}")
     [written] = progress([chosen], total=1, desc="Merging", unit="group")
-    return MergeResult((write_group(dataset, written, IDS),))
+    return MergeResult((write_group(dataset, written, IDS, **place),))

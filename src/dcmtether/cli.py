@@ -199,26 +199,43 @@ def _series_ids(ctx, param, value: str | None) -> list[int] | None:
     callback=_series_ids,
     help="Merge these series (manifest ids, e.g. 4,5,6) instead of finding groups.",
 )
-def merge(dataset: Path, ids: list[int] | None) -> None:
+@click.option(
+    "--in-place",
+    is_flag=True,
+    help="Write the merged files beside the converted series instead of derivatives/merged.",
+)
+@click.option(
+    "--replace",
+    is_flag=True,
+    help="As --in-place, then remove the single series' files (only with a merged tether.json).",
+)
+def merge(dataset: Path, ids: list[int] | None, in_place: bool, replace: bool) -> None:
     """Merge series of one measurement into one 4D NIfTI (experimental).
 
     For scanners that write one series per b-value (e.g. IVIM). Without --ids, groups are found
-    automatically. Writes DATASET/derivatives/merged/; the converted series stay as they are.
-    Exit code 1 if a named group was not merged.
+    automatically. Writes DATASET/derivatives/merged/, or beside the converted series with
+    --in-place; --replace also removes the single series. Exit code 1 if a named group was not
+    merged, or a group was not replaced.
     """
     with _errors():
-        result = api.merge_series(dataset, ids, progress=_progress)
+        result = api.merge_series(
+            dataset, ids, in_place=in_place, replace=replace, progress=_progress
+        )
     if not result.groups:
         click.echo("No series to merge.")
     for group in result.groups:
         listed = ", ".join(f"#{i}" for i in group.series_ids)
         if group.path is not None:
-            click.echo(f"Merged series {listed} ({plural(group.n_volumes, 'volume')}).")
+            replaced = "; replaced the single series" if group.replaced else ""
+            click.echo(f"Merged series {listed} ({plural(group.n_volumes, 'volume')}){replaced}.")
             if group.no_tether:
                 click.echo(f"  no tether.json ({group.no_tether}): to-dcm needs the single series")
+            if group.not_replaced:
+                click.echo(f"  not replaced ({group.not_replaced}): the single series stay")
         else:
             click.echo(f"Not merged: series {listed}: {group.skipped}.")
-    if ids is not None and result.skipped:
+    not_replaced = any(g.not_replaced for g in result.groups)
+    if (ids is not None and result.skipped) or not_replaced:
         raise click.exceptions.Exit(1)
 
 

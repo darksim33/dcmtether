@@ -325,23 +325,36 @@ def merge_series(
     dataset: StrPath,
     ids: list[int] | None = None,
     *,
+    in_place: bool = False,
+    replace: bool = False,
     log: bool = True,
     progress: Progress | None = None,
 ) -> MergeResult:
     """Merge series of one measurement (e.g. one series per IVIM b-value) into one 4D NIfTI.
 
     Without ``ids``, groups are found automatically; with ``ids``, those converted series are
-    merged. Writes ``dataset/derivatives/merged/...``; the converted series stay as they are.
-    Experimental.
+    merged. Writes ``dataset/derivatives/merged/...``, or with ``in_place`` beside the converted
+    series. ``replace`` (implies ``in_place``) then removes the single series' files, if the
+    merged tether.json was written. Experimental.
     """
     dataset = _existing_dir(dataset, "DATASET")
     if not manifest_path(dataset).exists():
         raise ManifestError("no manifest in DATASET (run 'dcmtether scan' first)")
     with logged(dataset if log else None, "merge") as logger:
-        result = merge.merge(dataset, ids, progress or no_progress)
+        result = merge.merge(
+            dataset, ids, progress or no_progress, in_place=in_place, replace=replace
+        )
         for group in result.groups:
             if group.path is not None:
                 logger.event("merged", series_ids=list(group.series_ids), count=group.n_volumes)
+                if group.replaced:
+                    logger.event("replaced", series_ids=list(group.series_ids))
+                elif group.not_replaced:
+                    logger.event(
+                        "not_replaced",
+                        series_ids=list(group.series_ids),
+                        reason=group.not_replaced,
+                    )
             else:
                 logger.event("not_merged", series_ids=list(group.series_ids), reason=group.skipped)
         return result
