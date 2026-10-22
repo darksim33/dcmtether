@@ -111,7 +111,11 @@ uv run dcmtether merge study/
 # Merged series #5, #6, #7 (3 volumes).
 ```
 
-Volumes follow SeriesNumber. The sidecar lists the source ids under `DcmTether.MergedFrom` and
+Volumes are sorted by b-value when every series has one, and within a b-value by gradient
+direction: volumes without a direction first, then the directions in the order they were
+acquired (first appearance by SeriesNumber), the same for every b-value. A series with
+several volumes is placed by its smallest b-value and first direction; its own volumes keep
+their order. Without b-values, volumes follow SeriesNumber. The sidecar lists the source ids under `DcmTether.MergedFrom` and
 what differs between the series (b-values, SeriesNumber, …) under `DcmTether.PerVolume`.
 Series with different stored scaling are merged as float32 (`DcmTether.Rescaled`) and get no
 `*.tether.json`. Existing merged files are never overwritten. Exit code 1 if a group named with

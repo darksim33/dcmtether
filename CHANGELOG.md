@@ -15,7 +15,8 @@ file formats).
   single-b-value diffusion series of one protocol) or named by manifest id. The converted
   series stay as they are; a combined `*.tether.json` lets `to-dcm` write all source series
   back from the merged file. `--in-place` writes beside the single series, `--replace` also
-  removes them (manifest schema 5: `merged_into`). Shows a progress bar in a terminal
+  removes them (manifest schema 5: `merged_into`). Volumes are sorted by b-value, then gradient
+  direction (in acquisition order), else by SeriesNumber. Shows a progress bar in a terminal
   (`progress=` in the API).
 
 - `--body-part/-b` for `scan` and `run`: list every scanned series with its BodyPartExamined;
