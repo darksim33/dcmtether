@@ -25,7 +25,7 @@ from synthetic import (
 from dcmtether import orientation
 from dcmtether.cli import main
 from dcmtether.forward import convert_dataset
-from dcmtether.manifest import ManifestError, update_manifest, write_manifest
+from dcmtether.manifest import SCHEMA_VERSION, ManifestError, update_manifest, write_manifest
 from dcmtether.scanning import scan
 
 # Synthetic defaults: PatientName "Synthetic^Phantom", StudyDate 20260101, description
@@ -399,7 +399,8 @@ def test_manifest_records_outputs(tmp_path):
     assert first["sidecar_path"].endswith("_T1w.json")
     assert first["n_volumes"] == 1
     with sqlite3.connect(dataset / "manifest.sqlite") as db:
-        assert db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ("4",)
+        version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        assert version == (str(SCHEMA_VERSION),)
 
 
 def test_dataset_readme_warns_and_is_not_overwritten(tmp_path):

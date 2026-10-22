@@ -410,3 +410,115 @@ def test_merge_reports_progress(tmp_path, named):
         ("Reading series", "series", 3),
         ("Merging", "group", 1),
     ]
+
+
+# --- placement: --in-place and --replace ------------------------------------------------------
+
+
+def _series_rows(dataset: Path) -> dict[int, dict]:
+    import sqlite3
+
+    with sqlite3.connect(dataset / "manifest.sqlite") as db:
+        db.row_factory = sqlite3.Row
+        return {
+            r["series_number"]: dict(r)
+            for r in db.execute(
+                "SELECT s.series_number, s.merged_into, o.nifti_path, o.n_volumes "
+                "FROM series s LEFT JOIN outputs o ON o.series_id = s.id"
+            )
+        }
+
+
+def test_in_place_writes_beside_the_series(tmp_path):
+    dataset = _dataset(tmp_path, _b_series(0, 5), _b_series(50, 6))
+    singles = sorted(dataset.glob("sub-*/**/*.nii.gz"))
+    [group] = dt.merge_series(dataset, in_place=True).groups
+    assert group.path.parent == singles[0].parent
+    assert not (dataset / "derivatives").exists()
+    assert not group.replaced and all(p.exists() for p in singles)
+    rebuilt = tmp_path / "rebuilt"
+    dt.to_dcm(group.path, rebuilt)
+    assert dt.compare(tmp_path / "src", rebuilt).identical
+    [again] = dt.merge_series(dataset, in_place=True).groups
+    assert again.skipped == "already merged"
+
+
+def test_replace_removes_the_single_series(tmp_path):
+    series = [_b_series(0, 5), _b_series(50, 6), _b_series(800, 7)]
+    dataset = _dataset(tmp_path, *series)
+    ids = _ids_by_number(dataset)
+    singles = sorted(p for p in dataset.glob("sub-*/**/*") if p.is_file())
+    [group] = dt.merge_series(dataset, replace=True).groups
+    assert group.replaced and group.not_replaced is None
+    left = sorted(p for p in dataset.glob("sub-*/**/*") if p.is_file())
+    assert not set(singles) & set(left)
+    assert {p.name.removesuffix("".join(p.suffixes)) for p in left} == {
+        group.path.name.removesuffix(".nii.gz")
+    }
+
+    rows = _series_rows(dataset)
+    merged = group.path.relative_to(dataset).as_posix()
+    assert (rows[5]["nifti_path"], rows[5]["n_volumes"], rows[5]["merged_into"]) == (
+        merged,
+        3,
+        None,
+    )
+    assert rows[6] == {
+        "series_number": 6,
+        "merged_into": ids[5],
+        "nifti_path": None,
+        "n_volumes": None,
+    }
+    assert rows[7]["merged_into"] == ids[5] and rows[7]["nifti_path"] is None
+
+    assert dt.merge_series(dataset).groups == ()
+    rerun = dt.run(tmp_path / "src", dataset)
+    assert rerun.ok and not rerun.converted
+    rebuilt = tmp_path / "rebuilt"
+    dt.to_dcm(group.path, rebuilt)
+    for s in series:
+        folder = f"s{s.spec.series_number}"
+        assert dt.compare(tmp_path / "src" / folder, rebuilt / folder).identical
+
+
+def test_replace_keeps_the_series_without_a_merged_tether(tmp_path):
+    dataset = _dataset(
+        tmp_path, _b_series(0, 5, rescale=(1.0, 0.0)), _b_series(50, 6, rescale=(2.0, -5.0))
+    )
+    singles = sorted(dataset.glob("sub-*/**/*.nii.gz"))
+    [group] = dt.merge_series(dataset, replace=True).groups
+    assert group.path is not None and group.path.parent == singles[0].parent
+    assert not group.replaced and group.not_replaced == "no tether.json"
+    assert all(p.exists() for p in singles)
+    assert all(r["merged_into"] is None for r in _series_rows(dataset).values())
+
+
+def test_cli_replace(tmp_path):
+    dataset = _dataset(tmp_path, _b_series(0, 5), _b_series(50, 6))
+    ids = sorted(_ids_by_number(dataset).values())
+    result = CliRunner().invoke(main, ["merge", str(dataset), "--replace"])
+    assert result.exit_code == 0, result.output
+    assert result.output == (
+        f"Merged series #{ids[0]}, #{ids[1]} (2 volumes); replaced the single series.\n"
+    )
+
+
+def test_cli_replace_without_tether_fails(tmp_path):
+    dataset = _dataset(
+        tmp_path, _b_series(0, 5, rescale=(1.0, 0.0)), _b_series(50, 6, rescale=(2.0, -5.0))
+    )
+    result = CliRunner().invoke(main, ["merge", str(dataset), "--replace"])
+    assert result.exit_code == 1
+    assert "not replaced (no tether.json): the single series stay" in result.output
+
+
+def test_replace_is_logged(tmp_path):
+    from dcmtether import log
+
+    dataset = _dataset(tmp_path, _b_series(0, 5), _b_series(50, 6))
+    dt.merge_series(dataset, replace=True)
+    records = [json.loads(line) for line in log.log_files(dataset)[-1].read_text().splitlines()]
+    assert [r["event"] for r in records if r["event"] in ("merged", "replaced")] == [
+        "merged",
+        "replaced",
+    ]

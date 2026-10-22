@@ -246,7 +246,7 @@ def test_converted_series_keeps_its_name_when_naming_rules_change(tmp_path, monk
 
 def _downgrade_to_v3(dataset: Path) -> None:
     with sqlite3.connect(dataset / "manifest.sqlite") as db:
-        for column in ("stem", "dup", "patient_id", "subject_base"):
+        for column in ("stem", "dup", "patient_id", "subject_base", "merged_into"):
             db.execute(f"ALTER TABLE series DROP COLUMN {column}")
         db.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
 
