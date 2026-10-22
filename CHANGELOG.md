@@ -17,12 +17,17 @@ file formats).
   back from the merged file. `--in-place` writes beside the single series, `--replace` also
   removes them (manifest schema 5: `merged_into`). Volumes are sorted by b-value, then gradient
   direction (in acquisition order), else by SeriesNumber. Shows a progress bar in a terminal
-  (`progress=` in the API).
+  (`progress=` in the API). Exit code 1 if a named group was not merged or not replaced. The
+  sidecar records the grouping rule (`DcmTether.MergeRule`). The API adds `MergeResult`,
+  `MergedGroup` and `MergeError`.
 
 - `--body-part/-b` for `scan` and `run`: list every scanned series with its BodyPartExamined;
   `SeriesInfo.body_part` in the Python API.
 
 ### Changed
+
+- `scan` and `run` ignore `derivatives/merged/` when the dataset lies inside the scanned
+  folder. Existing manifests upgrade to schema 5 automatically.
 
 - Diffusion series with a single b-value are now named `dwi` too: from ImageType `DIFFUSION`,
   else the keywords `dwi`, `dti`, `ivim` or `diff` in SeriesDescription/ProtocolName (before:
