@@ -23,7 +23,8 @@ from two rules, in this order:
   ``b50``) and echo time, whose b-value and gradient differ from each other (a repeated
   measurement is not merged).
 
-Volumes are ordered by SeriesNumber. Messages name series by manifest id only.
+Volumes are ordered by b-value if every series has one, then by gradient direction (in the
+order the directions were acquired), else by SeriesNumber. Messages name series by manifest id only.
 """
 
 import json
@@ -61,7 +62,7 @@ IDS = "ids"
 
 @dataclass(frozen=True)
 class MergedGroup:
-    #: Manifest ids, in volume order (SeriesNumber).
+    #: Manifest ids, in volume order (b-value, gradient direction, SeriesNumber).
     series_ids: tuple[int, ...]
     n_volumes: int
     #: The merged NIfTI, or ``None`` if the group was not written.
@@ -179,9 +180,50 @@ def _members(dataset: Path, progress: Progress = no_progress) -> dict[int, _Memb
     return members
 
 
+def _b_value(member: _Member) -> float | None:
+    """The smallest b-value of a series, or ``None`` if it has none."""
+    values = [b for b in member.per_volume().get("DiffusionBValue", []) if b is not None]
+    try:
+        return min(float(b) for b in values) if values else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _direction(member: _Member) -> tuple | None:
+    """Gradient direction of a series' first volume (rounded), or ``None`` (b0, trace)."""
+    gradient = _diffusion_key(member)[1]
+    try:
+        return None if gradient is None else tuple(round(float(g), 4) for g in gradient)
+    except (TypeError, ValueError):
+        return None
+
+
 def _ordered(members: list[_Member]) -> list[_Member]:
+    """By b-value if every series has one, then gradient direction, then SeriesNumber, then id.
+
+    Directions rank in the order they first appear by SeriesNumber (acquisition order), so
+    every b-value lists them alike; no direction comes first.
+    """
+
+    def by_number(m: _Member) -> tuple:
+        return (m.series_number is None, m.series_number or 0, m.series_id)
+
+    b_values = {m.series_id: _b_value(m) for m in members}
+    if not all(b is not None for b in b_values.values()):
+        return sorted(members, key=by_number)
+    directions = {m.series_id: _direction(m) for m in members}
+    rank: dict[tuple, int] = {}
+    for m in sorted(members, key=by_number):
+        direction = directions[m.series_id]
+        if direction is not None:
+            rank.setdefault(direction, len(rank))
     return sorted(
-        members, key=lambda m: (m.series_number is None, m.series_number or 0, m.series_id)
+        members,
+        key=lambda m: (
+            b_values[m.series_id],
+            -1 if directions[m.series_id] is None else rank[directions[m.series_id]],
+            *by_number(m),
+        ),
     )
 
 
