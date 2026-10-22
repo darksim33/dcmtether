@@ -66,11 +66,29 @@ headers, classifying, converting, reading series, merging). They show counts onl
 when done. They are not shown when the output is redirected; set `TQDM_DISABLE=1` to turn them
 off in a terminal as well.
 
-### `merge DATASET [--ids 4,5,6]` (experimental)
+### `merge DATASET [--ids 4,5,6] [--in-place | --replace]` (experimental)
 
-Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own and stays
-that way; `merge` adds one 4D NIfTI + sidecar + `*.tether.json` per measurement under
-`DATASET/derivatives/merged/sub-…/ses-…/dwi/` (`…_desc-merged_dwi.nii.gz`). The merged
+Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own; `merge`
+adds one 4D NIfTI + sidecar + `*.tether.json` per measurement (`…_desc-merged_dwi.nii.gz`).
+Where it goes:
+
+| Option | Merged files | Single series |
+|---|---|---|
+| (none) | `DATASET/derivatives/merged/sub-…/ses-…/dwi/` | kept |
+| `--in-place` | beside the single series, `DATASET/sub-…/ses-…/dwi/` | kept |
+| `--replace` | beside the single series | removed (NIfTI, sidecar, tether) |
+
+`--in-place` places files inside the dataset; it is unrelated to an in-place dataset (one
+written into the DICOM folder). With `--replace`, the manifest lists the merged file as the
+output of the first series; the others point to it (`merged_into`) and are never converted
+again. A group without a merged `*.tether.json` (see below) is not replaced: its single series
+stay, and the exit code is 1.
+
+> [!WARNING]
+> `--replace` deletes the single series' files. The merged `*.tether.json` and the DICOM source
+> remain the way back; try it on a copy of the dataset first.
+
+The merged
 tether combines the series' own: `to-dcm` on the merged NIfTI writes all source series back,
 identical to the originals, in their folders relative to a common one. Only use it on unchanged
 voxels: the rebuilt files keep the original UIDs. Derivatives (`to-seg`, `to-pmap`, `to-mr`)
@@ -96,8 +114,8 @@ uv run dcmtether merge study/
 Volumes follow SeriesNumber. The sidecar lists the source ids under `DcmTether.MergedFrom` and
 what differs between the series (b-values, SeriesNumber, …) under `DcmTether.PerVolume`.
 Series with different stored scaling are merged as float32 (`DcmTether.Rescaled`) and get no
-`*.tether.json`. Existing
-merged files are never overwritten. Exit code 1 if a group named with `--ids` was not merged.
+`*.tether.json`. Existing merged files are never overwritten. Exit code 1 if a group named with
+`--ids` was not merged, or a group was not replaced.
 
 ## Back to DICOM
 

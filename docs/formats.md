@@ -7,7 +7,8 @@ dataset/
 ├── manifest.sqlite                 scan and conversion records
 ├── README.md                       identifying-data warning, file name entities
 ├── logs/dcmtether_<time>.jsonl     structured log (no PHI)
-├── derivatives/merged/sub-…/…      merged series (`merge`; NIfTI + sidecar + tether)
+├── derivatives/merged/sub-…/…      merged series (`merge`; NIfTI + sidecar + tether;
+│                                   with --in-place/--replace beside the series instead)
 └── sub-<subject>/ses-<session>/
     ├── anat/<stem>.nii.gz          voxels (raw stored values, closest RAS)
     ├── anat/<stem>.json            human-readable sidecar (BIDS-style keys)
@@ -120,12 +121,12 @@ same for every volume or the series has a single volume: one series per IVIM b-v
 Images without a gradient (b0, trace) have `null`. Only diffusion series (suffix `dwi` or a
 diffusion map) get them: Philips writes a zero b-value into other images too.
 
-## Manifest (`manifest.sqlite`, schema 4)
+## Manifest (`manifest.sqlite`, schema 5)
 
 | Table | Content |
 |---|---|
 | `meta` | schema/tool version, source root, scan time, `subject_names` (`brief`/`full`, set on the first conversion) |
-| `series` | one row per SeriesInstanceUID: id, status (`supported`/`split`/`unsupported`), reasons, equipment, geometry summary, conversion status and error, and the names it was converted under (subject and session labels, file stem, `_XX` counter, PatientID, subject label before clash numbering) |
+| `series` | one row per SeriesInstanceUID: id, status (`supported`/`split`/`unsupported`), reasons, equipment, geometry summary, conversion status and error, and the names it was converted under (subject and session labels, file stem, `_XX` counter, PatientID, subject label before clash numbering), `merged_into` (`merge --replace`: the series whose output holds this one's volumes) |
 | `instances` | one row per file (path relative to the source root) |
 | `outputs` | one row per NIfTI: series id, chunk, NIfTI/tether/sidecar paths, number of volumes |
 | `skipped_files` | files that are not DICOM images, with the reason |
@@ -143,4 +144,4 @@ are added within the same second). `run`, `scan` and `to-nii` start a file each;
 `n_files`, `n_series`, `n_converted`, `n_failed`, …), lists of series ids (`new`,
 `rescanned`, `unchanged`, `changed_after_conversion`, `missing`) and `kind`. Events: `start`,
 `end`, `error`, `scanned`, `manifest_updated`, `series_classified`, `series_converted`,
-`series_failed`, `written`, `merged`, `not_merged`.
+`series_failed`, `written`, `merged`, `not_merged`, `replaced`, `not_replaced`.

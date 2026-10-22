@@ -82,14 +82,17 @@ Convert every scanned series of `dataset` that is not converted yet; failed ones
 `message`, `outputs`, `warning`), and from them `converted` (ids), `failed` (id → reason),
 `warnings` (id → text, e.g. a numbered duplicate name) and `ok`.
 
-### `merge_series(dataset, ids=None, *, log=True, progress=None)` → `MergeResult`
+### `merge_series(dataset, ids=None, *, in_place=False, replace=False, log=True, progress=None)` → `MergeResult`
 
 Merge series of one measurement (e.g. one series per IVIM b-value) into one 4D NIfTI under
-`dataset/derivatives/merged/` (experimental; see [usage](usage.md)). Without `ids`, groups are
-found automatically. `MergeResult`: `groups`, `merged` and `skipped` (lists of `MergedGroup`:
+`dataset/derivatives/merged/`, or beside the single series with `in_place=True`
+(experimental; see [usage](usage.md)). `replace=True` (implies `in_place`) then removes the
+single series' files if the merged `*.tether.json` was written. Without `ids`, groups are found
+automatically. `MergeResult`: `groups`, `merged` and `skipped` (lists of `MergedGroup`:
 `series_ids`, `n_volumes`, `path`, `skipped` (the reason a group was not written),
 `tether_path`, `no_tether` (the reason no `*.tether.json` was written) and `rule`
-(`"siemens-xa-split"`, `"diffusion-protocol"` or `"ids"`)).
+(`"siemens-xa-split"`, `"diffusion-protocol"` or `"ids"`), `replaced` and `not_replaced`
+(the reason the single series were kept)).
 Raises `MergeError` if the series named in `ids` cannot be merged.
 
 ## Back to DICOM
