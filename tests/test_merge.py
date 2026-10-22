@@ -522,3 +522,43 @@ def test_replace_is_logged(tmp_path):
         "merged",
         "replaced",
     ]
+
+
+def test_volumes_are_sorted_by_b_value(tmp_path):
+    # SeriesNumbers in another order than the b-values
+    series = [_b_series(800, 5), _b_series(0, 6), _b_series(50, 7)]
+    dataset = _dataset(tmp_path, *series)
+    ids = _ids_by_number(dataset)
+    [group] = dt.merge_series(dataset).groups
+    assert group.series_ids == (ids[6], ids[7], ids[5])
+    sidecar = json.loads(
+        group.path.with_name(group.path.name.replace(".nii.gz", ".json")).read_text()
+    )
+    assert sidecar["DcmTether"]["PerVolume"]["DiffusionBValue"] == [0, 50, 800]
+    merged = nib.load(group.path)
+    for volume, number in enumerate((6, 7, 5)):
+        single = next(r for r in output_rows(dataset) if r["series_id"] == ids[number])
+        expected = nib.load(dataset / single["nifti_path"]).get_fdata()
+        assert np.array_equal(merged.get_fdata()[..., volume], expected)
+    rebuilt = tmp_path / "rebuilt"
+    dt.to_dcm(group.path, rebuilt)
+    assert dt.compare(tmp_path / "src", rebuilt).identical
+
+
+def test_volumes_are_sorted_by_b_value_then_direction(tmp_path):
+    x, y, z = (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)
+    acquired = {5: (50, z), 6: (0, None), 7: (50, x), 8: (100, x), 9: (100, z), 10: (50, y)}
+    acquired[11] = (100, y)
+    series = [_b_series(b, n, gradient=g) for n, (b, g) in acquired.items()]
+    dataset = _dataset(tmp_path, *series)
+    ids = _ids_by_number(dataset)
+    [group] = dt.merge_series(dataset).groups
+    # directions first appear as z (#5), x (#7), y (#10): that order within every b-value
+    assert group.series_ids == tuple(ids[n] for n in (6, 5, 7, 10, 9, 8, 11))
+    sidecar = json.loads(
+        group.path.with_name(group.path.name.replace(".nii.gz", ".json")).read_text()
+    )
+    assert sidecar["DcmTether"]["PerVolume"]["DiffusionBValue"] == [0, 50, 50, 50, 100, 100, 100]
+    rebuilt = tmp_path / "rebuilt"
+    dt.to_dcm(group.path, rebuilt)
+    assert dt.compare(tmp_path / "src", rebuilt).identical
