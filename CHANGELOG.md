@@ -26,6 +26,9 @@ file formats).
 
 ### Changed
 
+- Licensed under GPL-3.0-or-later (`LICENSE`); `dcmtether --version` shows the copyright
+  notice.
+
 - `scan` and `run` ignore `derivatives/merged/` when the dataset lies inside the scanned
   folder. Existing manifests upgrade to schema 5 automatically.
 

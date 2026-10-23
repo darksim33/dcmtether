@@ -19,8 +19,12 @@ What works today is described in [supported inputs](supported-inputs.md).
   - `func/` (fMRI, `bold`), `fmap/` (field maps), `perf/` (ASL);
   - QSM/SWI: multi-echo GRE as `MEGRE` with `part-mag` / `part-phase`, scanner-reconstructed
     maps as `Chimap` / `swi`.
-- **`.bval` / `.bvec` files** next to diffusion series, with the gradients rotated into the
-  NIfTI frame (GE and Philips gradients are listed unconverted in the sidecar today).
+- **`.bval` / `.bvec` files** next to diffusion series and merged diffusion files, with the
+  gradients rotated into the NIfTI frame (GE and Philips gradients are listed unconverted in
+  the sidecar today).
+- **Siemens B-matrix**: the upper triangle (Bxx, Bxy, Bxz, Byy, Byz, Bzz) from SIEMENS MR
+  HEADER `(0019,xx27)`, per volume in the sidecar (`DcmTether.PerVolume`) and, like the
+  `.bvec`, in a file of its own next to the NIfTI (one row per volume); also for merged files.
 
 ## Derivatives
 

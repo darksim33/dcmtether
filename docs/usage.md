@@ -92,7 +92,9 @@ The merged
 tether combines the series' own: `to-dcm` on the merged NIfTI writes all source series back,
 identical to the originals, in their folders relative to a common one. Only use it on unchanged
 voxels: the rebuilt files keep the original UIDs. Derivatives (`to-seg`, `to-pmap`, `to-mr`)
-need a 3D source: use one of the single series.
+need a 3D source: use one of the single series. After `--replace` they no longer exist: write
+derivatives before replacing, or keep the single series with `--in-place`. `--replace` after
+`--in-place` replaces with the files merged before.
 
 Without `--ids`, groups are found automatically among converted series of the same subject,
 session, study, frame of reference and voxel grid (two acquisitions at different positions are
