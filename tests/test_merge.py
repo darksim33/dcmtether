@@ -562,3 +562,17 @@ def test_volumes_are_sorted_by_b_value_then_direction(tmp_path):
     rebuilt = tmp_path / "rebuilt"
     dt.to_dcm(group.path, rebuilt)
     assert dt.compare(tmp_path / "src", rebuilt).identical
+
+
+def test_replace_after_in_place_uses_the_merged_files(tmp_path):
+    dataset = _dataset(tmp_path, _b_series(0, 5), _b_series(50, 6))
+    ids = _ids_by_number(dataset)
+    [first] = dt.merge_series(dataset, in_place=True).groups
+    singles = [p for p in dataset.glob("sub-*/**/*.nii.gz") if p != first.path]
+    [group] = dt.merge_series(dataset, replace=True).groups
+    assert group.replaced and group.skipped is None and group.path == first.path
+    assert not any(p.exists() for p in singles)
+    assert _series_rows(dataset)[6]["merged_into"] == ids[5]
+    rebuilt = tmp_path / "rebuilt"
+    dt.to_dcm(group.path, rebuilt)
+    assert dt.compare(tmp_path / "src", rebuilt).identical
