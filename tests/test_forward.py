@@ -225,6 +225,29 @@ def test_private_tag_diffusion_goes_to_dwi(tmp_path, vendor, gradient_key, b0_gr
     assert not other & per_volume.keys()
 
 
+def test_siemens_b_matrix_is_listed_per_volume(tmp_path):
+    series = make_4d(n_volumes=3, kind="diffusion_siemens")
+    for ds in series.datasets:
+        if ds.private_block(0x0019, "SIEMENS MR HEADER").get_tag(0x0E) in ds:  # not b0
+            ds.private_block(0x0019, "SIEMENS MR HEADER").add_new(
+                0x27, "FD", [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            )
+    dataset = _dataset(tmp_path, series)
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    nifti = _single_output(dataset)
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    per_volume = sidecar["DcmTether"]["PerVolume"]
+    assert per_volume["DiffusionBMatrix"] == [None] + [[1000.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * 2
+
+
+def test_no_b_matrix_key_without_a_b_matrix(tmp_path):
+    dataset = _dataset(tmp_path, make_4d(n_volumes=3, kind="diffusion_siemens"))
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    nifti = _single_output(dataset)
+    sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
+    assert "DiffusionBMatrix" not in sidecar["DcmTether"]["PerVolume"]
+
+
 @pytest.mark.parametrize(
     ("kind", "gradient_key", "source"),
     [

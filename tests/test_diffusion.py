@@ -3,6 +3,7 @@ from pydicom.dataset import Dataset
 from synthetic import _private_diffusion
 
 from dcmtether.diffusion import GE, PHILIPS, SIEMENS, STANDARD, Diffusion, diffusion_values
+from dcmtether.frames import frame_views
 
 
 def _mr(**elements) -> Dataset:
@@ -78,5 +79,60 @@ def test_unparsable_private_value_is_ignored():
     assert diffusion_values(ds) == Diffusion()
 
 
+_B_MATRIX = (1.0, 0.5, 0.0, 800.0, 0.25, 100.0)
+
+
+def _siemens_with_matrix(values) -> Dataset:
+    ds = _mr()
+    _private_diffusion(ds, "siemens", 1)
+    ds.private_block(0x0019, "SIEMENS MR HEADER").add_new(0x27, "FD", list(values))
+    return ds
+
+
+def test_siemens_b_matrix():
+    values = diffusion_values(_siemens_with_matrix(_B_MATRIX))
+    assert values.b_matrix == _B_MATRIX
+    assert values.source == SIEMENS
+
+
+def test_siemens_b_matrix_needs_six_values():
+    assert diffusion_values(_siemens_with_matrix(_B_MATRIX[:5])).b_matrix is None
+
+
+def test_standard_b_matrix():
+    ds = _mr(DiffusionBValue=800.0)
+    for axes, value in zip(("XX", "XY", "XZ", "YY", "YZ", "ZZ"), _B_MATRIX, strict=True):
+        setattr(ds, f"DiffusionBValue{axes}", value)
+    assert diffusion_values(ds).b_matrix == _B_MATRIX
+
+
+def test_standard_b_matrix_needs_all_elements():
+    ds = _mr(DiffusionBValue=800.0, DiffusionBValueXX=1.0)
+    assert diffusion_values(ds).b_matrix is None
+
+
+@pytest.mark.parametrize("vendor", ["ge", "philips"])
+def test_vendors_without_b_matrix(vendor):
+    ds = _mr()
+    _private_diffusion(ds, vendor, 1)
+    assert diffusion_values(ds).b_matrix is None
+
+
 def test_no_diffusion():
     assert diffusion_values(_mr(Manufacturer="SIEMENS")) == Diffusion()
+
+
+def test_b_matrix_of_an_enhanced_frame():
+    matrix = Dataset()
+    for axes, value in zip(("XX", "XY", "XZ", "YY", "YZ", "ZZ"), _B_MATRIX, strict=True):
+        setattr(matrix, f"DiffusionBValue{axes}", value)
+    item = Dataset()
+    item.DiffusionBValue = 800.0
+    item.DiffusionDirectionality = "BMATRIX"
+    item.DiffusionBMatrixSequence = [matrix]
+    group = Dataset()
+    group.MRDiffusionSequence = [item]
+    ds = _mr(NumberOfFrames=1)
+    ds.PerFrameFunctionalGroupsSequence = [group]
+    (view,) = frame_views(ds)
+    assert diffusion_values(view) == Diffusion(800.0, None, STANDARD, _B_MATRIX)
