@@ -5,6 +5,14 @@ All notable changes to dcmtether are recorded here. The format follows
 [Semantic Versioning](https://semver.org/) (before 1.0, minor versions may break the CLI or
 file formats).
 
+## [Unreleased]
+
+### Added
+
+- Diffusion b-matrix in the sidecar: `DcmTether.PerVolume.DiffusionBMatrix` (Bxx, Bxy, Bxz, Byy,
+  Byz, Bzz per volume) from the standard enhanced-MR elements `DiffusionBValueXX`–`ZZ` or
+  Siemens' `(0019,xx27)`; also in merged sidecars.
+
 ## [0.2.0] - 2026-10-23
 
 ### Added

@@ -118,7 +118,11 @@ listed unconverted under `DiffusionGradientVendor` instead of
 Diffusion values are always under `PerVolume`, one entry per volume, also when they are the
 same for every volume or the series has a single volume: one series per IVIM b-value gets
 `"PerVolume": {"DiffusionBValue": [800.0], "DiffusionGradientOrientation": [[1.0, 0.0, 0.0]]}`.
-Images without a gradient (b0, trace) have `null`. Only diffusion series (suffix `dwi` or a
+Images without a gradient (b0, trace) have `null`. If the DICOM stores a b-matrix, it is listed
+per volume as `DiffusionBMatrix`, the upper triangle `[Bxx, Bxy, Bxz, Byy, Byz, Bzz]` (`null` where
+a volume has none, absent if no volume has one). It comes from `DiffusionBValueXX`–`ZZ`
+(0018,9602–9607) in enhanced MR, else from Siemens `SIEMENS MR HEADER` (0019,xx27); GE and Philips
+store none. Values are as stored, not rotated. Only diffusion series (suffix `dwi` or a
 diffusion map) get them: Philips writes a zero b-value into other images too.
 
 ## Manifest (`manifest.sqlite`, schema 5)
