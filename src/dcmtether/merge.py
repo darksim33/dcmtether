@@ -404,6 +404,17 @@ def _replace(dataset: Path, members: list[_Member], targets: tuple[Path, ...], n
                 path.unlink(missing_ok=True)
 
 
+def _merged_from(targets: tuple[Path, ...]) -> set[int] | None:
+    """Series ids of complete merged files (NIfTI, sidecar and tether.json), else ``None``."""
+    if not all(t.exists() for t in targets):
+        return None
+    try:
+        info = json.loads(targets[1].read_text("utf-8"))["DcmTether"]
+        return {int(i) for i in info["MergedFrom"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def write_group(
     dataset: Path,
     members: list[_Member],
@@ -423,6 +434,12 @@ def write_group(
     tether_path = nifti_path.with_name(stem + tether.TETHER_SUFFIX)
     targets = (nifti_path, sidecar_path, tether_path)
     if any(t.exists() for t in targets):
+        if replace and _merged_from(targets) == set(ids):
+            # merged in place before (--in-place, or interrupted): replace with those files
+            _replace(dataset, members, targets, n_volumes)
+            return MergedGroup(
+                ids, n_volumes, nifti_path, tether_path=tether_path, rule=rule, replaced=True
+            )
         return MergedGroup(ids, n_volumes, skipped="already merged", rule=rule)
     data, scaling, rescaled = _merged_data(members)
     info = _merged_sidecar(members)
