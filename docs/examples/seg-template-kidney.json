@@ -1,0 +1,63 @@
+{
+  "ContentCreatorName": "Reader^One",
+  "SeriesDescription": "Kidney segmentation",
+  "SeriesNumber": "300",
+  "InstanceNumber": "1",
+  "segmentAttributes": [
+    [
+      {
+        "labelID": 1,
+        "SegmentLabel": "kidney",
+        "SegmentDescription": "Kidney",
+        "SegmentAlgorithmType": "AUTOMATIC",
+        "SegmentAlgorithmName": "nnInteractive",
+        "SegmentAlgorithmVersion": "0.1.0",
+        "SegmentedPropertyCategoryCodeSequence": {
+          "CodeValue": "123037004",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Anatomical Structure"
+        },
+        "SegmentedPropertyTypeCodeSequence": {
+          "CodeValue": "10200004",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Kidney"
+        },
+        "recommendedDisplayRGBValue": [221, 130, 101]
+      },
+      {
+        "labelID": 2,
+        "SegmentLabel": "liver",
+        "SegmentDescription": "Liver",
+        "SegmentAlgorithmType": "MANUAL",
+        "SegmentedPropertyCategoryCodeSequence": {
+          "CodeValue": "49755003",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Anatomical Structure"
+        },
+        "SegmentedPropertyTypeCodeSequence": {
+          "CodeValue": "108369006",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Liver"
+        },
+        "recommendedDisplayRGBValue": [255, 0, 0]
+      },
+      {
+        "labelID": 3,
+        "SegmentLabel": "tumor",
+        "SegmentDescription": "Tumor",
+        "SegmentAlgorithmType": "MANUAL",
+        "SegmentedPropertyCategoryCodeSequence": {
+          "CodeValue": "49755004",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Morphologically Abnormal Structure"
+        },
+        "SegmentedPropertyTypeCodeSequence": {
+          "CodeValue": "108369007",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Tumor"
+        },
+        "recommendedDisplayRGBValue": [255, 0, 0]
+      }
+    ]
+  ]
+}
