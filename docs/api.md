@@ -28,7 +28,7 @@ Only the names listed on this page (`dcmtether.__all__`) are the API. Modules su
 - **Logging.** Functions that work on a dataset write the same records to
   `DATASET/logs/dcmtether_<time>.jsonl` as the CLI ([formats](formats.md#log)). Pass
   `log=False` to write none.
-- **Progress.** `scan`, `to_nii` and `run` take `progress=`, a callable used like `tqdm`
+- **Progress.** `scan`, `to_nii`, `run` and `merge_series` take `progress=`, a callable used like `tqdm`
   (`progress(iterable, total=…, desc=…, unit=…)`), e.g. `progress=tqdm.tqdm`. Default: none.
 - Existing files are never overwritten. Research use only.
 
@@ -82,6 +82,19 @@ Convert every scanned series of `dataset` that is not converted yet; failed ones
 `message`, `outputs`, `warning`), and from them `converted` (ids), `failed` (id → reason),
 `warnings` (id → text, e.g. a numbered duplicate name) and `ok`.
 
+### `merge_series(dataset, ids=None, *, in_place=False, replace=False, log=True, progress=None)` → `MergeResult`
+
+Merge series of one measurement (e.g. one series per IVIM b-value) into one 4D NIfTI under
+`dataset/derivatives/merged/`, or beside the single series with `in_place=True`
+(experimental; see [usage](usage.md)). `replace=True` (implies `in_place`) then removes the
+single series' files if the merged `*.tether.json` was written. Without `ids`, groups are found
+automatically. `MergeResult`: `groups`, `merged` and `skipped` (lists of `MergedGroup`:
+`series_ids`, `n_volumes`, `path`, `skipped` (the reason a group was not written),
+`tether_path`, `no_tether` (the reason no `*.tether.json` was written) and `rule`
+(`"siemens-xa-split"`, `"diffusion-protocol"` or `"ids"`), `replaced` and `not_replaced`
+(the reason the single series were kept)).
+Raises `MergeError` if the series named in `ids` cannot be merged.
+
 ## Back to DICOM
 
 ### `to_dcm(nifti, output, *, log=True)` → `DcmResult`
@@ -131,6 +144,7 @@ dt.to_pmap(nifti, "adc.nii.gz", template, "adc.dcm")
 | `ManifestError` | no manifest, a manifest that already exists, another SOURCE, a SOURCE with `sub-*` folders on the first in-place run, `full_name` on a short-label dataset |
 | `ConversionError` | a series cannot be converted (normally reported per series, not raised) |
 | `ReverseError` | `to_dcm`: the NIfTI does not match its tether, or output files exist |
+| `MergeError` | `merge_series`: named series that are not converted, split, or not on one grid |
 | `TetherError` | a `*.tether.json` is unreadable, foreign, too old or damaged |
 | `DerivedError` | `to_seg`, `to_pmap`, `to_mr`: bad template, derivative off the grid, unsupported source, output exists |
 

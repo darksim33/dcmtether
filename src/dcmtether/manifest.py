@@ -17,7 +17,7 @@ from dcmtether.errors import DcmtetherError
 from dcmtether.scanning import ScanResult
 
 MANIFEST_NAME = "manifest.sqlite"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Version 1; newer versions are reached via _UPGRADES only, so new
 # manifests and upgraded old ones always end up identical.
@@ -98,6 +98,10 @@ ALTER TABLE series ADD COLUMN stem TEXT;          -- file stem without counter a
 ALTER TABLE series ADD COLUMN dup INTEGER;        -- the _XX counter, NULL if none
 ALTER TABLE series ADD COLUMN patient_id TEXT;    -- '' if the header has none; NULL: unknown
 ALTER TABLE series ADD COLUMN subject_base TEXT;  -- subject label before clash numbering
+""",
+    # 4 → 5: series replaced by a merged file (merge --replace) point to the series that holds it.
+    5: """
+ALTER TABLE series ADD COLUMN merged_into INTEGER;  -- id of the series with the merged output
 """,
 }
 
@@ -219,6 +223,30 @@ def record_converted(
                 for o in outputs
             ],
         )
+
+
+def record_merged(
+    db: sqlite3.Connection, first_id: int, other_ids: list[int], output: Output
+) -> None:
+    """A merged file replaces the outputs of several series: it becomes the output of
+    ``first_id``; the others keep no output of their own and point to ``first_id``. All stay
+    converted, so they are never converted again."""
+    with db:
+        db.execute(
+            "UPDATE outputs SET nifti_path = ?, tether_path = ?, sidecar_path = ?, "
+            "n_volumes = ? WHERE series_id = ? AND chunk = ?",
+            (
+                output.nifti_path,
+                output.tether_path,
+                output.sidecar_path,
+                output.n_volumes,
+                first_id,
+                output.chunk,
+            ),
+        )
+        for series_id in other_ids:
+            db.execute("DELETE FROM outputs WHERE series_id = ?", (series_id,))
+            db.execute("UPDATE series SET merged_into = ? WHERE id = ?", (first_id, series_id))
 
 
 def record_failed(db: sqlite3.Connection, series_id: int, error: str) -> None:

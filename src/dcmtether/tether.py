@@ -280,6 +280,70 @@ def build(
     }
 
 
+_COMBINED_SOURCE_KEYS = ("sop_class_uid", "transfer_syntax_uid")
+
+
+def combine(documents: Sequence[dict], prefixes: Sequence[str]) -> dict:
+    """One document for several series on one grid, each series' volumes after the previous
+    one's (e.g. one series per b-value): ``to-dcm`` then writes all of them back.
+
+    Every instance keeps its own header (SeriesInstanceUID included); only the volume index
+    changes. ``prefixes`` are the series' folders relative to a common one, prepended to the
+    file names. :class:`TetherError` if the pixel layouts differ.
+    """
+    first = documents[0]
+    for doc in documents[1:]:
+        if (
+            doc["pixel"]["dtype"] != first["pixel"]["dtype"]
+            or doc["pixel"]["pixel_data_vr"] != first["pixel"]["pixel_data_vr"]
+            or doc["pixel"]["orientation"] != first["pixel"]["orientation"]
+            or doc["pixel"]["shape_dicom"][:3] != first["pixel"]["shape_dicom"][:3]
+        ):
+            raise TetherError("series differ in pixel layout")
+        if any(doc["source"][k] != first["source"][k] for k in _COMBINED_SOURCE_KEYS):
+            raise TetherError("series differ in SOP class or transfer syntax")
+
+    instances, metas, elements, strings = [], [], [], []
+    offset = 0
+    for doc, prefix in zip(documents, prefixes, strict=True):
+        shape = doc["pixel"]["shape_dicom"]
+
+        def remap(index: list[int], offset: int = offset) -> list[int]:
+            return [index[0], offset + (index[1] if len(index) > 1 else 0)]
+
+        for inst in doc["instances"]:
+            layout = (
+                {"frames": [remap(i) for i in inst["frames"]]}
+                if "frames" in inst
+                else {"index": remap(inst["index"])}
+            )
+            name = f"{prefix}/{inst['file_name']}" if prefix else inst["file_name"]
+            extra = {k: v for k, v in inst.items() if k == "pixel_data_trailing"}
+            instances.append({**layout, "file_name": name, **extra})
+            metas.append({**doc["file_meta"], **inst["file_meta"]})
+            elements.append({**doc["shared"], **inst["elements"]})
+            strings.append({**doc["original_strings"], **inst["original_strings"]})
+        offset += shape[3] if len(shape) > 3 else 1
+
+    meta_shared, meta_rest = split_shared(metas)
+    shared, shared_strings, rest, rest_strings = _split_with_strings(elements, strings)
+    for entry, meta, elems, st in zip(instances, meta_rest, rest, rest_strings, strict=True):
+        trailing = entry.pop("pixel_data_trailing", None)
+        entry.update(file_meta=meta, elements=elems, original_strings=st)
+        if trailing is not None:
+            entry["pixel_data_trailing"] = trailing
+    return {
+        "format_version": FORMAT_VERSION,
+        "tool": {"name": "dcmtether", "version": __version__},
+        "source": {**first["source"], "n_instances": len(instances), "n_series": len(documents)},
+        "file_meta": meta_shared,
+        "shared": shared,
+        "original_strings": shared_strings,
+        "instances": instances,
+        "pixel": {**first["pixel"], "shape_dicom": [*first["pixel"]["shape_dicom"][:3], offset]},
+    }
+
+
 def write(document: dict, path: Path) -> None:
     try:
         text = json.dumps(document, indent=1, allow_nan=False)

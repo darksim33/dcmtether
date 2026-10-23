@@ -9,10 +9,28 @@ file formats).
 
 ### Added
 
+- `merge DATASET [--ids …]` / `merge_series` (experimental): merge series of one measurement
+  (e.g. one series per IVIM b-value) into one 4D NIfTI under `derivatives/merged/`; groups are
+  found automatically (Siemens XA split series: `MFSPLIT` + same SeriesTime, any type;
+  single-b-value diffusion series of one protocol) or named by manifest id. The converted
+  series stay as they are; a combined `*.tether.json` lets `to-dcm` write all source series
+  back from the merged file. `--in-place` writes beside the single series, `--replace` also
+  removes them (manifest schema 5: `merged_into`). Volumes are sorted by b-value, then gradient
+  direction (in acquisition order), else by SeriesNumber. Shows a progress bar in a terminal
+  (`progress=` in the API). Exit code 1 if a named group was not merged or not replaced. The
+  sidecar records the grouping rule (`DcmTether.MergeRule`). The API adds `MergeResult`,
+  `MergedGroup` and `MergeError`.
+
 - `--body-part/-b` for `scan` and `run`: list every scanned series with its BodyPartExamined;
   `SeriesInfo.body_part` in the Python API.
 
 ### Changed
+
+- Licensed under GPL-3.0-or-later (`LICENSE`); `dcmtether --version` shows the copyright
+  notice.
+
+- `scan` and `run` ignore `derivatives/merged/` when the dataset lies inside the scanned
+  folder. Existing manifests upgrade to schema 5 automatically.
 
 - Diffusion series with a single b-value are now named `dwi` too: from ImageType `DIFFUSION`,
   else the keywords `dwi`, `dti`, `ivim` or `diff` in SeriesDescription/ProtocolName (before:

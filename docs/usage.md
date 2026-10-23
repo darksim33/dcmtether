@@ -61,10 +61,67 @@ Each series ends up in one of three states (see [supported inputs](supported-inp
 
 ### Progress
 
-In a terminal, `run`, `scan` and `to-nii` show progress bars on stderr (reading headers,
-classifying, converting). They show counts only, never file or patient names, and disappear
+In a terminal, `run`, `scan`, `to-nii` and `merge` show progress bars on stderr (reading
+headers, classifying, converting, reading series, merging). They show counts only, never file or patient names, and disappear
 when done. They are not shown when the output is redirected; set `TQDM_DISABLE=1` to turn them
 off in a terminal as well.
+
+### `merge DATASET [--ids 4,5,6] [--in-place | --replace]` (experimental)
+
+Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own; `merge`
+adds one 4D NIfTI + sidecar + `*.tether.json` per measurement (`…_desc-merged_dwi.nii.gz`).
+Where it goes:
+
+| Option | Merged files | Single series |
+|---|---|---|
+| (none) | `DATASET/derivatives/merged/sub-…/ses-…/dwi/` | kept |
+| `--in-place` | beside the single series, `DATASET/sub-…/ses-…/dwi/` | kept |
+| `--replace` | beside the single series | removed (NIfTI, sidecar, tether) |
+
+`--in-place` places files inside the dataset; it is unrelated to an in-place dataset (one
+written into the DICOM folder). With `--replace`, the manifest lists the merged file as the
+output of the first series; the others point to it (`merged_into`) and are never converted
+again. A group without a merged `*.tether.json` (see below) is not replaced: its single series
+stay, and the exit code is 1.
+
+> [!WARNING]
+> `--replace` deletes the single series' files. The merged `*.tether.json` and the DICOM source
+> remain the way back; try it on a copy of the dataset first.
+
+The merged
+tether combines the series' own: `to-dcm` on the merged NIfTI writes all source series back,
+identical to the originals, in their folders relative to a common one. Only use it on unchanged
+voxels: the rebuilt files keep the original UIDs. Derivatives (`to-seg`, `to-pmap`, `to-mr`)
+need a 3D source: use one of the single series. After `--replace` they no longer exist: write
+derivatives before replacing, or keep the single series with `--in-place`. `--replace` after
+`--in-place` replaces with the files merged before.
+
+Without `--ids`, groups are found automatically among converted series of the same subject,
+session, study, frame of reference and voxel grid (two acquisitions at different positions are
+two groups), by two rules in this order:
+
+| Rule (`DcmTether.MergeRule`) | Series |
+|---|---|
+| `siemens-xa-split` | split by Siemens XA from one enhanced acquisition: `MFSPLIT` in ImageType, XA software, the same SeriesTime (as dcm2niix groups XA classic data). Any type: diffusion, echoes, dynamics, …; SeriesNumbers may differ freely. Magnitude, phase and derived images stay apart. |
+| `diffusion-protocol` | single-volume `dwi` series with the same protocol (ProtocolName, else SeriesDescription, without b-value tokens such as `b50`) and echo time, each with another b-value or gradient (a repeated measurement is not merged) |
+
+`--ids` merges the named series (rule `ids`); only subject, session, study, frame of reference
+and voxel grid are checked. SeriesTime is only compared, never written or printed.
+
+```bash
+uv run dcmtether merge study/
+# Merged series #5, #6, #7 (3 volumes).
+```
+
+Volumes are sorted by b-value when every series has one, and within a b-value by gradient
+direction: volumes without a direction first, then the directions in the order they were
+acquired (first appearance by SeriesNumber), the same for every b-value. A series with
+several volumes is placed by its smallest b-value and first direction; its own volumes keep
+their order. Without b-values, volumes follow SeriesNumber. The sidecar lists the source ids under `DcmTether.MergedFrom` and
+what differs between the series (b-values, SeriesNumber, …) under `DcmTether.PerVolume`.
+Series with different stored scaling are merged as float32 (`DcmTether.Rescaled`) and get no
+`*.tether.json`. Existing merged files are never overwritten. Exit code 1 if a group named with
+`--ids` was not merged, or a group was not replaced.
 
 ## Back to DICOM
 
