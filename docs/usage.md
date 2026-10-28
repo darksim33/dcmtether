@@ -5,6 +5,7 @@ patient names, UIDs or file paths; series are named by their **manifest id** (`s
 Existing files are never overwritten. Research use only.
 
 Every command is also a Python function with the same behaviour: see [Python API](api.md).
+Without a terminal: the [desktop app](gui.md).
 
 ## Workflow
 

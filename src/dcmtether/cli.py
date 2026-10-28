@@ -2,11 +2,10 @@
 
 Output and logs never name patients, UIDs or paths: series are referred to by manifest id.
 Commands that work on a dataset append structured records to ``DATASET/logs/dcmtether_<time>.jsonl``
-(:mod:`dcmtether.log`).
+(:mod:`dcmtether.log`). The wording of the output lives in :mod:`dcmtether.report`.
 """
 
 import sys
-from collections import Counter
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,11 +13,10 @@ from pathlib import Path
 import click
 from tqdm import tqdm
 
-from dcmtether import __version__, api
-from dcmtether.api import ConversionResult, ScanSummary
+from dcmtether import __version__, api, report
+from dcmtether.api import ScanSummary
 from dcmtether.errors import DcmtetherError
 from dcmtether.manifest import ManifestUpdate
-from dcmtether.scanning import Status, plural
 
 _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
@@ -61,6 +59,11 @@ def _errors() -> Iterator[None]:
         yield
     except DcmtetherError as exc:
         raise click.ClickException(str(exc)) from None
+
+
+def _echo(lines: list[str]) -> None:
+    for line in lines:
+        click.echo(line)
 
 
 @click.group(help="Lossless DICOM <-> NIfTI round trips for MRI series. Research use only.")
@@ -158,7 +161,9 @@ def to_nii(dataset: Path, full_name: bool, verbose: bool) -> None:
     """
     with _errors():
         result = api.to_nii(dataset, full_name=full_name, progress=_progress)
-    _report_conversion(result, verbose)
+    _echo(report.conversion_lines(result, verbose))
+    if not result.ok:
+        raise click.exceptions.Exit(1)
 
 
 @main.command()
@@ -263,10 +268,7 @@ def to_dcm(nifti: Path, output: Path) -> None:
     """
     with _errors():
         result = api.to_dcm(nifti, output)
-    click.echo(f"Wrote {plural(len(result.paths), 'DICOM file')}.")
-    if result.transfer_syntax_change:
-        source, written = result.transfer_syntax_change
-        click.echo(f"Transfer syntax changed from {source} to {written} (lossless).")
+    _echo(report.dcm_lines(result))
 
 
 @main.command()
@@ -277,18 +279,9 @@ def compare(original: Path, rebuilt: Path) -> None:
 
     Instances are paired by SOPInstanceUID. Exit code 0 if identical, 1 if not.
     """
-    report = api.compare(original, rebuilt)
-    compared = plural(report.n_compared, "instance")
-    if report.identical:
-        click.echo(f"Identical: {compared} compared.")
-    else:
-        click.echo(f"{plural(len(report.differences), 'difference')} in {compared} compared:")
-        for line in report.lines():
-            click.echo(f"  {line}")
-    # Notes repeat per instance (e.g. a transfer syntax change): print each kind once.
-    for (where, kind), n in Counter((note.where, note.kind) for note in report.notes).items():
-        click.echo(f"  note: {where}: {kind} ({plural(n, 'instance')})")
-    if not report.identical:
+    result = api.compare(original, rebuilt)
+    _echo(report.compare_lines(result))
+    if not result.identical:
         raise click.exceptions.Exit(1)
 
 
@@ -309,14 +302,7 @@ def to_seg_command(nifti: Path, labels: Path, metadata: Path, output: Path) -> N
     """
     with _errors():
         result = api.to_seg(nifti, labels, metadata, output)
-    click.echo(
-        f"Wrote DICOM SEG with {plural(len(result.segment_numbers), 'segment')} on "
-        f"{plural(result.n_sources, 'source image')}."
-    )
-    renumbered = {k: v for k, v in result.segment_numbers.items() if k != v}
-    if renumbered:
-        pairs = ", ".join(f"{k}->{v}" for k, v in sorted(renumbered.items()))
-        click.echo(f"Label values renumbered to segment numbers: {pairs}.")
+    _echo(report.seg_lines(result))
 
 
 @main.command("to-pmap")
@@ -333,10 +319,7 @@ def to_pmap_command(nifti: Path, map_nifti: Path, metadata: Path, output: Path) 
     """
     with _errors():
         result = api.to_pmap(nifti, map_nifti, metadata, output)
-    click.echo(
-        f"Wrote DICOM Parametric Map ({result.dtype}) on "
-        f"{plural(result.n_sources, 'source image')}."
-    )
+    _echo(report.pmap_lines(result))
 
 
 @main.command("to-mr")
@@ -353,7 +336,4 @@ def to_mr_command(nifti: Path, derivative: Path, metadata: Path, output: Path) -
     """
     with _errors():
         result = api.to_mr(nifti, derivative, metadata, output)
-    click.echo(f"Wrote {plural(len(result.paths), 'derived MR image')} ({result.kind}).")
-    if result.max_error > 0:
-        cause = "Rescale rounded to DS precision" if result.rounded else "Quantized to 16 bits"
-        click.echo(f"{cause}: max error {result.max_error:.3g} (to-pmap is exact).")
+    _echo(report.mr_lines(result))
