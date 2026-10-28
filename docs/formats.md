@@ -7,6 +7,8 @@ dataset/
 ├── manifest.sqlite                 scan and conversion records
 ├── README.md                       identifying-data warning, file name entities
 ├── logs/dcmtether_<time>.jsonl     structured log (no PHI)
+├── derivatives/merged/sub-…/…      merged series (`merge`; NIfTI + sidecar + tether;
+│                                   with --in-place/--replace beside the series instead)
 └── sub-<subject>/ses-<session>/
     ├── anat/<stem>.nii.gz          voxels (raw stored values, closest RAS)
     ├── anat/<stem>.json            human-readable sidecar (BIDS-style keys)
@@ -31,8 +33,14 @@ BIDS-inspired, not BIDS-compliant:
 
 Diffusion maps are recognised by an ImageType value (`ADC`, `EADC`, `FA`, `TRACEW`, `TRACE`),
 else by keywords in the `acq-` text (`adc`, `apparent diffusion`, `trace`, `tracew`,
-`fractional anisotropy`; a bare `fa` only next to `dti`, `dwi`, `diff` or `tensor`, because it
-also means flip angle). They are stored in `dwi/`. A text naming several maps is not used.
+`fractional anisotropy`; a bare `fa` only next to `dti`, `dwi`, `diff`, `ivim` or `tensor`,
+because it also means flip angle). They are stored in `dwi/`. A text naming several maps is not
+used.
+
+Diffusion series are recognised by b-values that differ between volumes, else (e.g. a series
+with a single b-value) by the ImageType value `DIFFUSION`, else by the keywords `dwi`, `dti`,
+`ivim` or `diff` (not `difference`) in the `acq-` text. Map rules are checked first, since
+scanner maps carry `DIFFUSION` too.
 
 Name clashes are never resolved silently:
 
@@ -75,13 +83,17 @@ without pixel data:
 Indices always refer to DICOM order (rows, columns, slices along the slice normal[, volumes]),
 never to NIfTI order. Version 2 files are still read.
 
+A merged tether (`merge`) has the same format. It holds the instances of several series:
+`source` describes the first and adds `n_series`; `file_name` starts with the series' folder
+relative to a common one; series *k*'s volumes follow those of the series before it.
+
 ## Sidecar (`<stem>.json`)
 
 Readable BIDS-style keys (times in seconds) — not used to rebuild the DICOM, no patient
 identifiers. `DcmTether` holds tool information: `Version`, `SuffixRule`, `AcqSource`
 (SeriesDescription/ProtocolName), `Duplicate` (the `_XX` counter), `DiffusionSource`, `Chunk`,
-and for 4D series `VolumeKey` (the DICOM attribute that tells the volumes apart) and
-`PerVolume` (values that differ between volumes).
+for 4D series `VolumeKey` (the DICOM attribute that tells the volumes apart), and
+`PerVolume` (values that differ between volumes, and diffusion values; see below).
 
 `PerVolume` uses the same keys and units as the top level: times are in seconds, and the
 echo time of an enhanced series (`EffectiveEchoTime`) is listed as `EchoTime`. Attributes
@@ -101,15 +113,24 @@ the vendor private tags, found by private creator:
 | Philips | `Philips Imaging DD 001` (2001,xx03) | `Philips MR Imaging DD 001` (2005,xxB0–xxB2), RL/AP/FH |
 
 `DiffusionSource` then names the tags. GE and Philips gradients are not in patient LPS and are
-listed unconverted under `PerVolume.DiffusionGradientVendor` instead of
+listed unconverted under `DiffusionGradientVendor` instead of
 `DiffusionGradientOrientation`. GE values are used only when the gradient tags are present too.
+Diffusion values are always under `PerVolume`, one entry per volume, also when they are the
+same for every volume or the series has a single volume: one series per IVIM b-value gets
+`"PerVolume": {"DiffusionBValue": [800.0], "DiffusionGradientOrientation": [[1.0, 0.0, 0.0]]}`.
+Images without a gradient (b0, trace) have `null`. If the DICOM stores a b-matrix, it is listed
+per volume as `DiffusionBMatrix`, the upper triangle `[Bxx, Bxy, Bxz, Byy, Byz, Bzz]` (`null` where
+a volume has none, absent if no volume has one). It comes from `DiffusionBValueXX`–`ZZ`
+(0018,9602–9607) in enhanced MR, else from Siemens `SIEMENS MR HEADER` (0019,xx27); GE and Philips
+store none. Values are as stored, not rotated. Only diffusion series (suffix `dwi` or a
+diffusion map) get them: Philips writes a zero b-value into other images too.
 
-## Manifest (`manifest.sqlite`, schema 4)
+## Manifest (`manifest.sqlite`, schema 5)
 
 | Table | Content |
 |---|---|
 | `meta` | schema/tool version, source root, scan time, `subject_names` (`brief`/`full`, set on the first conversion) |
-| `series` | one row per SeriesInstanceUID: id, status (`supported`/`split`/`unsupported`), reasons, equipment, geometry summary, conversion status and error, and the names it was converted under (subject and session labels, file stem, `_XX` counter, PatientID, subject label before clash numbering) |
+| `series` | one row per SeriesInstanceUID: id, status (`supported`/`split`/`unsupported`), reasons, equipment, geometry summary, conversion status and error, and the names it was converted under (subject and session labels, file stem, `_XX` counter, PatientID, subject label before clash numbering), `merged_into` (`merge --replace`: the series whose output holds this one's volumes) |
 | `instances` | one row per file (path relative to the source root) |
 | `outputs` | one row per NIfTI: series id, chunk, NIfTI/tether/sidecar paths, number of volumes |
 | `skipped_files` | files that are not DICOM images, with the reason |
@@ -121,10 +142,10 @@ Older manifests are upgraded in place when opened. The manifest holds UIDs, Pati
 `logs/dcmtether_<time>.jsonl`: one JSON object per line, written by every command that works
 on the dataset. `<time>` is the UTC start of the command (`YYYYMMDDTHHMMSS`; `_2`, `_3`, …
 are added within the same second). `run`, `scan` and `to-nii` start a file each; `to-dcm`,
-`to-seg`, `to-pmap` and `to-mr` append to the newest one, or start one if there is none. A
+`to-seg`, `to-pmap`, `to-mr` and `merge` append to the newest one, or start one if there is none. A
 `logs/dcmtether.jsonl` from before the names had a timestamp is left as it is. Fields come from a fixed allowlist (`dcmtether.log.ALLOWED_FIELDS`): `time`,
-`version`, `command`, `event`, `series_id`, `status`, `reason`, counts (`count`, `outputs`,
+`version`, `command`, `event`, `series_id`, `series_ids`, `status`, `reason`, counts (`count`, `outputs`,
 `n_files`, `n_series`, `n_converted`, `n_failed`, …), lists of series ids (`new`,
 `rescanned`, `unchanged`, `changed_after_conversion`, `missing`) and `kind`. Events: `start`,
 `end`, `error`, `scanned`, `manifest_updated`, `series_classified`, `series_converted`,
-`series_failed`, `written`.
+`series_failed`, `written`, `merged`, `not_merged`, `replaced`, `not_replaced`.

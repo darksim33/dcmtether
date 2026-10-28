@@ -93,8 +93,7 @@ class Planned:
 
     @property
     def datatype(self) -> str:
-        diffusion = self.suffix == DWI_SUFFIX or self.suffix.value in naming.DIFFUSION_MAP_SUFFIXES
-        return DWI_DIR if diffusion else DATATYPE_DIR
+        return DWI_DIR if _is_diffusion_suffix(self.suffix) else DATATYPE_DIR
 
     @property
     def names(self) -> manifest.Names:
@@ -307,6 +306,7 @@ def plan_labels(
             DWI_SUFFIX
             if item.diffusion
             else naming.diffusion_map_suffix(item.image_type, text)
+            or naming.dwi_suffix(item.image_type, text)
             or naming.contrast_suffix(
                 text, item.repetition_time, item.echo_time, item.inversion_time
             )
@@ -538,25 +538,37 @@ def _sidecar_value(ds: pydicom.Dataset, keyword: str, scale: float | None):
     return value
 
 
-def _private_diffusion(volumes: list[pydicom.Dataset], per_volume: dict) -> str | None:
-    """Fill b-values/gradients read from vendor private tags into ``per_volume``.
+def _is_diffusion_suffix(suffix: naming.Suffix) -> bool:
+    return suffix.value == DWI_SUFFIX.value or suffix.value in naming.DIFFUSION_MAP_SUFFIXES
 
-    Returns where they came from (``DcmTether.DiffusionSource``), or ``None`` if the standard
-    elements were used. Gradients not in patient LPS (GE, Philips) are listed unconverted
-    under ``DiffusionGradientVendor`` instead of ``DiffusionGradientOrientation``.
+
+def _diffusion(volumes: list[pydicom.Dataset], per_volume: dict) -> str | None:
+    """Fill b-values/gradients (standard elements, else vendor private tags) into the sidecar.
+
+    Always in ``per_volume``, one entry per volume, also for a series with a single volume
+    (e.g. one series per b-value), so they are always found in the same place. Returns where
+    they came from
+    (``DcmTether.DiffusionSource``), or ``None`` if there are none or the standard elements
+    were used. Gradients not in patient LPS (GE, Philips) are listed unconverted under
+    ``DiffusionGradientVendor`` instead of ``DiffusionGradientOrientation``. A b-matrix (xx, xy,
+    xz, yy, yz, zz) is listed under ``DiffusionBMatrix`` if any volume has one.
     """
     values = [diffusion.diffusion_values(ds) for ds in volumes]
     sources = {v.source for v in values if v.source is not None}
-    if sources <= {diffusion.STANDARD}:
+    if not sources:
         return None
-    gradients = [None if v.gradient is None else list(v.gradient) for v in values]
+    lps = all(v.gradient_lps for v in values if v.source is not None)
+    gradient_key = "DiffusionGradientOrientation" if lps else "DiffusionGradientVendor"
+    # replaces what the volume key filled in from the standard elements (empty if private)
+    per_volume.pop("DiffusionGradientOrientation", None)
     per_volume["DiffusionBValue"] = [v.b_value for v in values]
-    if all(v.gradient_lps for v in values if v.source is not None):
-        per_volume["DiffusionGradientOrientation"] = gradients
-    else:
-        per_volume.pop("DiffusionGradientOrientation", None)
-        per_volume["DiffusionGradientVendor"] = gradients
-    return "; ".join(diffusion.SOURCE_TAGS[s] for s in sorted(sources))
+    per_volume[gradient_key] = [None if v.gradient is None else list(v.gradient) for v in values]
+    if any(v.b_matrix is not None for v in values):
+        per_volume["DiffusionBMatrix"] = [
+            None if v.b_matrix is None else list(v.b_matrix) for v in values
+        ]
+    standard = sources <= {diffusion.STANDARD}
+    return None if standard else "; ".join(diffusion.SOURCE_TAGS[s] for s in sorted(sources))
 
 
 def sidecar(
@@ -582,13 +594,14 @@ def sidecar(
     volumes = [firsts[v] for v in sorted(firsts)]
     out: dict = {}
     per_volume: dict = {}
-    diffusion_source = None
     with quiet_pydicom():
         for keyword in volume_key:
             key, scale = _SIDECAR_KEYS.get(keyword, (keyword, None))
             per_volume.setdefault(key, [_sidecar_value(ds, keyword, scale) for ds in volumes])
-        if "DiffusionBValue" in volume_key:
-            diffusion_source = _private_diffusion(volumes, per_volume)
+        diffusion_source = None
+        # Only diffusion series: Philips writes a zero b-value into other images too.
+        if "DiffusionBValue" in volume_key or _is_diffusion_suffix(suffix):
+            diffusion_source = _diffusion(volumes, per_volume)
         for keyword, key, scale in _SIDECAR_KEYWORDS:
             if key in out or key in per_volume:
                 continue  # an earlier keyword already filled it
@@ -611,6 +624,7 @@ def sidecar(
         info["Chunk"] = chunk
     if volume_key:
         info["VolumeKey"] = list(volume_key)
+    if volume_key or per_volume:  # a 3D series: only diffusion values
         info["PerVolume"] = per_volume
     out["DcmTether"] = info
     return out
@@ -718,7 +732,9 @@ it as is. Research use only.
 volumes are listed in the sidecar under `DcmTether.PerVolume`. Diffusion b-values and
 gradients come from the standard DICOM elements, else from vendor private tags (Siemens, GE,
 Philips; named in `DcmTether.DiffusionSource`). GE/Philips gradients are not in patient
-coordinates and are listed unconverted as `DiffusionGradientVendor`.
+coordinates and are listed unconverted as `DiffusionGradientVendor`. They are always under
+`PerVolume`, also for a series with a single volume (e.g. one series per b-value). A b-matrix
+(standard enhanced-MR elements or Siemens' private tag) is listed as `DiffusionBMatrix`.
 
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
@@ -736,10 +752,11 @@ coordinates and are listed unconverted as `DiffusionGradientVendor`.
   manifest order, recorded in the sidecar under `DcmTether.Duplicate`.
 - `chunk-`: one per image plane when a series holds several (e.g. localizers), numbered in
   InstanceNumber order.
-- suffix: `dwi` for diffusion series; `ADC`, `eADC`, `FA`, `TRACE` for diffusion maps calculated
-  by the scanner (from ImageType, else keywords; stored in `dwi/`); else `T1w`, `T2w`, `PDw`,
-  `FLAIR` from keywords in the same text as `acq-`, or from TR/TE/TI, else `MR`; the rule used
-  is recorded in the sidecar under `DcmTether.SuffixRule`.
+- suffix: `dwi` for diffusion series (b-values that differ between volumes, else ImageType
+  `DIFFUSION`, else keywords `dwi`, `dti`, `ivim`, `diff`); `ADC`, `eADC`, `FA`, `TRACE` for
+  diffusion maps calculated by the scanner (from ImageType, else keywords; stored in `dwi/`);
+  else `T1w`, `T2w`, `PDw`, `FLAIR` from keywords in the same text as `acq-`, or from TR/TE/TI,
+  else `MR`; the rule used is recorded in the sidecar under `DcmTether.SuffixRule`.
 """
 
 

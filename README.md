@@ -31,7 +31,8 @@ dt.to_dcm("dataset/sub-…/….nii.gz", "rebuilt/")
 - [Desktop app](docs/gui.md): a window for the same commands; portable Windows app.
 - [Formats](docs/formats.md): dataset layout, file names, `*.tether.json`, sidecar, manifest, log.
 - [Supported inputs](docs/supported-inputs.md): what converts, what does not, and why.
-- Example metadata templates: [`docs/examples/`](docs/examples/).
+- Example metadata templates: [`docs/examples/`](docs/examples/); writing your own:
+  [segmentation templates](docs/seg-templates.md).
 - [Roadmap](docs/roadmap.md): ideas for later versions.
 - [Changelog](CHANGELOG.md).
 
@@ -46,3 +47,16 @@ Portable Windows app: `powershell -ExecutionPolicy Bypass -File scripts/build_wi
 
 The first test run downloads public test data and the DICOM standard into `.cache/`. Test data
 coverage: `docs/dev/test-data.md`.
+
+## License
+
+dcmtether: lossless DICOM ⇄ NIfTI round trips for MRI series.
+Copyright (C) 2026 Thomas Thiel
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See
+the GNU General Public License for more details: [LICENSE](LICENSE).

@@ -700,13 +700,16 @@ def classify(series: Series) -> None:
 # --- scanning --------------------------------------------------------------------------------
 
 
-#: What a dataset writes at its top level (manifest, README, sub-*/) and its log files in
-#: logs/, skipped when the dataset lies inside the scanned folder itself (``run`` without
-#: ``--output``). Other files in logs/ are read: a source folder may be called that.
+#: What a dataset writes at its top level (manifest, README, sub-*/), its log files in logs/
+#: and merged series in derivatives/merged/, skipped when the dataset lies inside the scanned
+#: folder itself (``run`` without ``--output``). Other files in logs/ and derivatives/ are
+#: read: a source folder may be called that.
 _DATASET_FILES = re.compile(r"manifest\.sqlite(-journal|-wal|-shm)?|README\.md")
 _DATASET_DIRS = re.compile(r"sub-.*")
 LOG_DIR = "logs"
 _LOG_FILES = re.compile(r"dcmtether.*\.jsonl")
+DERIVATIVES_DIR = "derivatives"
+MERGED_DIR = "merged"
 
 
 def subject_folders(root: Path) -> int:
@@ -725,6 +728,8 @@ def _walk(root: Path, exclude: Path | None) -> list[Path]:
                 filenames = [f for f in filenames if not _DATASET_FILES.fullmatch(f)]
             elif here.name == LOG_DIR and here.parent.resolve() == exclude:
                 filenames = [f for f in filenames if not _LOG_FILES.fullmatch(f)]
+            elif here.name == DERIVATIVES_DIR and here.parent.resolve() == exclude:
+                dirnames[:] = [d for d in dirnames if d != MERGED_DIR]
         dirnames.sort()
         files.extend(here / name for name in sorted(filenames))
     return files

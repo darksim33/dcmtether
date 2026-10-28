@@ -9,10 +9,48 @@ file formats).
 
 ### Added
 
-- Desktop app (`dcmtether-gui`, tkinter): convert, rebuild, compare and derivatives in one
-  window, with progress and the CLI's report text. Shipped for Windows as a portable folder
-  (`dcmtether-gui-<version>-win64.zip`, no Python or install needed); built with
-  `scripts/build_windows.ps1`. See `docs/gui.md`.
+- Diffusion b-matrix in the sidecar: `DcmTether.PerVolume.DiffusionBMatrix` (Bxx, Bxy, Bxz, Byy,
+  Byz, Bzz per volume) from the standard enhanced-MR elements `DiffusionBValueXX`–`ZZ` or
+  Siemens' `(0019,xx27)`; also in merged sidecars.
+
+## [0.2.0] - 2026-10-23
+
+### Added
+
+- `merge DATASET [--ids …]` / `merge_series` (experimental): merge series of one measurement
+  (e.g. one series per IVIM b-value) into one 4D NIfTI under `derivatives/merged/`; groups are
+  found automatically (Siemens XA split series: `MFSPLIT` + same SeriesTime, any type;
+  single-b-value diffusion series of one protocol) or named by manifest id. The converted
+  series stay as they are; a combined `*.tether.json` lets `to-dcm` write all source series
+  back from the merged file. `--in-place` writes beside the single series, `--replace` also
+  removes them (manifest schema 5: `merged_into`). Volumes are sorted by b-value, then gradient
+  direction (in acquisition order), else by SeriesNumber. Shows a progress bar in a terminal
+  (`progress=` in the API). Exit code 1 if a named group was not merged or not replaced. The
+  sidecar records the grouping rule (`DcmTether.MergeRule`). The API adds `MergeResult`,
+  `MergedGroup` and `MergeError`.
+
+- `--body-part/-b` for `scan` and `run`: list every scanned series with its BodyPartExamined;
+  `SeriesInfo.body_part` in the Python API.
+
+### Changed
+
+- Licensed under GPL-3.0-or-later (`LICENSE`); `dcmtether --version` shows the copyright
+  notice.
+
+- `scan` and `run` ignore `derivatives/merged/` when the dataset lies inside the scanned
+  folder. Existing manifests upgrade to schema 5 automatically.
+
+- Diffusion series with a single b-value are now named `dwi` too: from ImageType `DIFFUSION`,
+  else the keywords `dwi`, `dti`, `ivim` or `diff` in SeriesDescription/ProtocolName (before:
+  only series whose b-values differ between volumes). `ivim` also counts as a diffusion word
+  for bare `fa` (FA maps).
+
+### Fixed
+
+- Diffusion b-values and gradients are now written to the sidecar for every diffusion series
+  (`dwi` or a diffusion map), always under `DcmTether.PerVolume` (one entry per volume), also
+  for a series with a single b-value (e.g. one series per IVIM b-value). Before, they only
+  appeared when they told the volumes of a 4D series apart.
 
 ## [0.1.0] - 2026-10-12
 

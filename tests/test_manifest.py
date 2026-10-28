@@ -104,7 +104,7 @@ def test_upgrade_from_v2_moves_outputs(tmp_path):
         }
     ]
     assert "nifti_path" not in columns
-    assert "conversion_status" in columns
+    assert {"conversion_status", "merged_into"} <= columns
 
 
 def test_a_converted_series_cannot_be_marked_failed(tmp_path):

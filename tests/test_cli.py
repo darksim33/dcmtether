@@ -9,7 +9,7 @@ from synthetic import SeriesSpec, make_localizer, make_series, write_series
 from dcmtether import __version__
 from dcmtether.cli import main
 
-COMMANDS = ["scan", "to-nii", "to-dcm", "compare", "to-seg", "to-pmap", "to-mr"]
+COMMANDS = ["scan", "to-nii", "to-dcm", "compare", "to-seg", "to-pmap", "to-mr", "merge"]
 
 
 @pytest.fixture
@@ -28,6 +28,8 @@ def test_version(runner):
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
     assert __version__ in result.output
+    assert "Copyright (C) 2026 Thomas Thiel" in result.output
+    assert "NO WARRANTY" in result.output and "GPL-3.0-or-later" in result.output
 
 
 def test_no_command_shows_help_as_usage_error(runner):
@@ -80,6 +82,30 @@ def test_scan_writes_manifest_and_summary(runner, tmp_path):
     assert "2.25." not in result.output
     assert "SYNTHETIC" not in result.output
     assert "Synthetic" not in result.output
+
+
+def test_body_part_lists_every_series(runner, tmp_path):
+    spec = SeriesSpec(series_number=1, extra={"BodyPartExamined": "ABDOMEN"})
+    write_series(make_series(spec), tmp_path / "src" / "a")
+    localizer = make_localizer()
+    for ds in localizer.datasets:
+        ds.pop("BodyPartExamined", None)
+    write_series(localizer, tmp_path / "src" / "b")
+
+    result = runner.invoke(main, ["scan", str(tmp_path / "src"), str(tmp_path / "d1"), "-b"])
+    assert result.exit_code == 0, result.output
+    assert "series #1 (5 instances, body part ABDOMEN) supported\n" in result.output
+    assert (
+        "series #2 (3 instances, body part not set) split: 3 distinct image planes" in result.output
+    )
+    without = runner.invoke(main, ["scan", str(tmp_path / "src"), str(tmp_path / "d2")])
+    assert "body part" not in without.output and "series #1" not in without.output
+
+    result = runner.invoke(main, ["run", str(tmp_path / "src"), "-o", str(tmp_path / "d3"), "-b"])
+    assert result.exit_code == 0, result.output
+    assert "series #1 (5 instances, body part ABDOMEN) supported\n" in result.output
+    again = runner.invoke(main, ["run", str(tmp_path / "src"), "-o", str(tmp_path / "d3"), "-b"])
+    assert "body part" not in again.output  # nothing new or rescanned
 
 
 def test_scan_refuses_existing_manifest(runner, tmp_path):

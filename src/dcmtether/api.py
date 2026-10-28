@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dcmtether import derived_mr, pmap, reverse, scanning, seg, tether
+from dcmtether import derived_mr, merge, pmap, reverse, scanning, seg, tether
 from dcmtether.comparison import Report, compare_series, dicom_files
 from dcmtether.derived_mr import DerivedMRResult
 from dcmtether.forward import Outcome, convert_dataset
@@ -27,6 +27,7 @@ from dcmtether.manifest import (
     update_manifest,
     write_manifest,
 )
+from dcmtether.merge import MergeResult
 from dcmtether.pmap import PmapResult
 from dcmtether.progress import Progress, no_progress
 from dcmtether.scanning import ScanResult, Status
@@ -45,6 +46,8 @@ class SeriesInfo:
     reasons: tuple[str, ...]
     #: Files, not frames.
     n_instances: int
+    #: BodyPartExamined of the first instance, if set.
+    body_part: str | None = None
 
 
 @dataclass(frozen=True)
@@ -158,7 +161,13 @@ def _check_first_in_place(source: Path, dataset: Path) -> None:
 def _summary(result: ScanResult, ids: dict[str, int]) -> ScanSummary:
     series = sorted(
         (
-            SeriesInfo(ids[s.series_instance_uid], s.status, tuple(s.reasons), len(s.files))
+            SeriesInfo(
+                ids[s.series_instance_uid],
+                s.status,
+                tuple(s.reasons),
+                len(s.files),
+                s.first.body_part_examined,
+            )
             for s in result.series
         ),
         key=lambda info: info.id,
@@ -310,6 +319,45 @@ def run(
         tuple(update.missing),
         conversion,
     )
+
+
+def merge_series(
+    dataset: StrPath,
+    ids: list[int] | None = None,
+    *,
+    in_place: bool = False,
+    replace: bool = False,
+    log: bool = True,
+    progress: Progress | None = None,
+) -> MergeResult:
+    """Merge series of one measurement (e.g. one series per IVIM b-value) into one 4D NIfTI.
+
+    Without ``ids``, groups are found automatically; with ``ids``, those converted series are
+    merged. Writes ``dataset/derivatives/merged/...``, or with ``in_place`` beside the converted
+    series. ``replace`` (implies ``in_place``) then removes the single series' files, if the
+    merged tether.json was written. Experimental.
+    """
+    dataset = _existing_dir(dataset, "DATASET")
+    if not manifest_path(dataset).exists():
+        raise ManifestError("no manifest in DATASET (run 'dcmtether scan' first)")
+    with logged(dataset if log else None, "merge") as logger:
+        result = merge.merge(
+            dataset, ids, progress or no_progress, in_place=in_place, replace=replace
+        )
+        for group in result.groups:
+            if group.path is not None:
+                logger.event("merged", series_ids=list(group.series_ids), count=group.n_volumes)
+                if group.replaced:
+                    logger.event("replaced", series_ids=list(group.series_ids))
+                elif group.not_replaced:
+                    logger.event(
+                        "not_replaced",
+                        series_ids=list(group.series_ids),
+                        reason=group.not_replaced,
+                    )
+            else:
+                logger.event("not_merged", series_ids=list(group.series_ids), reason=group.skipped)
+        return result
 
 
 # --- reverse and comparison --------------------------------------------------------------------
