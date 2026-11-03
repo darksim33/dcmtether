@@ -142,6 +142,7 @@ def test_convert_rebuild_and_compare(app, tmp_path):
     assert "Manifest: 1 new series, 0 rescanned, 0 unchanged." in text
     assert "Converted 1 series, 0 failed." in text
     assert app.status.get() == "Done."
+    assert float(app.bar["value"]) == float(app.bar["maximum"])  # a finished run leaves it full
     _no_secrets(text, tmp_path)
 
     nifti = tmp_path / "dataset" / output_rows(tmp_path / "dataset")[0]["nifti_path"]
@@ -213,3 +214,21 @@ def test_derivatives(app, tmp_path, kind, meta, expected):
     assert expected in text, text
     assert output.exists()
     _no_secrets(text, tmp_path)
+
+
+def test_progress_block_shows_counts_and_stays_full_after_a_run(app, tmp_path):
+    src = tmp_path / "src"
+    write_series(make_series(SeriesSpec(series_number=1)), src / "a")
+    app.fields["source"].set(str(src))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    seen = []
+    original = app.count.set
+    app.count.set = lambda value: (seen.append(value), original(value))[1]
+    _press(app, app.convert)
+    assert any(" / " in value for value in seen)  # "n / total" while counting
+    assert str(app.bar["mode"]) == "determinate"
+    # a command without steps to count (Compare) still ends with a full bar
+    app.fields["original"].set(str(src / "a"))
+    app.fields["rebuilt"].set(str(src / "a"))
+    _press(app, app.compare)
+    assert float(app.bar["value"]) == float(app.bar["maximum"]) == 1
