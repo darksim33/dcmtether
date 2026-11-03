@@ -1,4 +1,4 @@
-"""The window: one tab per kind of command, a shared output pane and a progress bar.
+"""The window: one tab per kind of command, a progress bar and a shared output pane.
 
 Paths entered here stay in the input fields: they are never shown in the output, the title or
 any file, because folder and file names can identify patients.
@@ -67,6 +67,16 @@ class App:
         self._compare_tab(tabs)
         self._derivatives_tab(tabs)
 
+        progress = ttk.Frame(outer)
+        progress.pack(fill="x", pady=(8, 0))
+        self.status = tk.StringVar(value="Ready.")
+        self.count = tk.StringVar(value="")
+        ttk.Label(progress, textvariable=self.status).grid(row=0, column=0, sticky="w")
+        ttk.Label(progress, textvariable=self.count).grid(row=0, column=1, sticky="e")
+        self.bar = ttk.Progressbar(progress, mode="determinate")
+        self.bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        progress.columnconfigure(0, weight=1)
+
         output = ttk.Frame(outer)
         output.pack(fill="both", expand=True, pady=(8, 0))
         self.output = tk.Text(output, height=14, wrap="word", state="disabled")
@@ -75,13 +85,9 @@ class App:
         self.output.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        status = ttk.Frame(outer)
-        status.pack(fill="x", pady=(8, 0))
-        self.status = tk.StringVar(value="Ready.")
-        ttk.Label(status, textvariable=self.status, width=24).pack(side="left")
-        self.bar = ttk.Progressbar(status, mode="determinate")
-        self.bar.pack(side="left", fill="x", expand=True, padx=8)
-        ttk.Label(status, text=f"{NOTICE}  v{__version__}", foreground="gray").pack(side="right")
+        ttk.Label(outer, text=f"{NOTICE}  v{__version__}", foreground="gray").pack(
+            anchor="e", pady=(8, 0)
+        )
 
     # --- layout helpers --------------------------------------------------------------------
 
@@ -259,7 +265,8 @@ class App:
         self._write([f"{title}…"])
         self._set_busy(True)
         self.status.set("Working…")
-        self.bar.configure(mode="indeterminate")
+        self.count.set("")
+        self.bar.configure(mode="indeterminate", value=0)
         self.bar.start(15)
         self.worker.start(task)
         self.root.after(POLL_MS, self._poll)
@@ -272,11 +279,12 @@ class App:
                     if total:
                         self.bar.stop()
                         self.bar.configure(mode="determinate", maximum=total, value=n)
+                        self.count.set(f"{n} / {total}")
                 case Lines(lines):
                     self._write(lines)
                 case Done(lines, ok):
                     self._write(lines)
-                    self._finish("Done." if ok else "Done, with problems (see above).")
+                    self._finish("Done." if ok else "Done, with problems (see above).", full=True)
                     return
                 case Failed(text):
                     self._write([f"Error: {text}"])
@@ -285,9 +293,11 @@ class App:
                     return
         self.root.after(POLL_MS, self._poll)
 
-    def _finish(self, status: str) -> None:
+    def _finish(self, status: str, full: bool = False) -> None:
+        """Back to idle; after a finished command the bar stays full (also for commands
+        without steps to count) until the next one starts."""
         self.bar.stop()
-        self.bar.configure(mode="determinate", value=0)
+        self.bar.configure(mode="determinate", maximum=1, value=1 if full else 0)
         self.status.set(status)
         self._set_busy(False)
 
