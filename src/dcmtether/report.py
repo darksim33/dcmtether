@@ -9,13 +9,18 @@ from dcmtether.api import ConversionResult, DcmResult, ScanSummary
 from dcmtether.comparison import Report
 from dcmtether.derived_mr import DerivedMRResult
 from dcmtether.manifest import ManifestUpdate
+from dcmtether.merge import MergeResult
 from dcmtether.pmap import PmapResult
 from dcmtether.scanning import Status, plural
 from dcmtether.seg import SegResult
 
 
-def scan_lines(summary: ScanSummary, only: set[int] | None = None) -> list[str]:
-    """Counts, then the non-supported series (all, or those in ``only``) and skipped files."""
+def scan_lines(
+    summary: ScanSummary, only: set[int] | None = None, body_part: bool = False
+) -> list[str]:
+    """Counts, then the non-supported series (all, or those in ``only``) and skipped files.
+
+    With ``body_part``, every series is listed with its BodyPartExamined."""
     lines = [
         f"Scanned {summary.n_files} files: {summary.n_instances} DICOM instances in "
         f"{len(summary.series)} series, {plural(summary.n_skipped, 'file')} skipped."
@@ -24,18 +29,24 @@ def scan_lines(summary: ScanSummary, only: set[int] | None = None) -> list[str]:
     for series in summary.series:
         if only is not None and series.id not in only:
             continue
+        if series.status is Status.SUPPORTED and not body_part:
+            continue
+        details = plural(series.n_instances, "instance")
+        if body_part:
+            details += f", body part {series.body_part or 'not set'}"
+        line = f"  series #{series.id} ({details}) {series.status.value}"
         if series.status is not Status.SUPPORTED:
-            lines.append(
-                f"  series #{series.id} ({plural(series.n_instances, 'instance')}) "
-                f"{series.status.value}: {'; '.join(series.reasons)}"
-            )
+            line += f": {'; '.join(series.reasons)}"
+        lines.append(line)
     lines += [f"  skipped {plural(n, 'file')}: {reason}" for reason, n in summary.skipped.items()]
     return lines
 
 
-def update_lines(summary: ScanSummary, update: ManifestUpdate) -> list[str]:
+def update_lines(
+    summary: ScanSummary, update: ManifestUpdate, body_part: bool = False
+) -> list[str]:
     """A rescan of a dataset: the scan (new and rescanned series only), then the manifest."""
-    lines = scan_lines(summary, only=set(update.new) | set(update.rescanned))
+    lines = scan_lines(summary, only=set(update.new) | set(update.rescanned), body_part=body_part)
     lines.append(
         f"Manifest: {len(update.new)} new series, {len(update.rescanned)} rescanned, "
         f"{len(update.unchanged)} unchanged."
@@ -115,3 +126,28 @@ def mr_lines(result: DerivedMRResult) -> list[str]:
         cause = "Rescale rounded to DS precision" if result.rounded else "Quantized to 16 bits"
         lines.append(f"{cause}: max error {result.max_error:.3g} (to-pmap is exact).")
     return lines
+
+
+def merge_lines(result: MergeResult) -> list[str]:
+    if not result.groups:
+        return ["No series to merge."]
+    lines = []
+    for group in result.groups:
+        listed = ", ".join(f"#{i}" for i in group.series_ids)
+        if group.path is not None:
+            replaced = "; replaced the single series" if group.replaced else ""
+            lines.append(f"Merged series {listed} ({plural(group.n_volumes, 'volume')}){replaced}.")
+            if group.no_tether:
+                lines.append(
+                    f"  no tether.json ({group.no_tether}): to-dcm needs the single series"
+                )
+            if group.not_replaced:
+                lines.append(f"  not replaced ({group.not_replaced}): the single series stay")
+        else:
+            lines.append(f"Not merged: series {listed}: {group.skipped}.")
+    return lines
+
+
+def merge_ok(result: MergeResult, ids_given: bool) -> bool:
+    """False if a named group was not merged, or a group was not replaced."""
+    return not ((ids_given and result.skipped) or any(g.not_replaced for g in result.groups))
