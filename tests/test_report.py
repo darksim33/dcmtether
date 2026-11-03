@@ -7,6 +7,7 @@ from dcmtether.api import ConversionResult, DcmResult, ScanSummary, SeriesInfo
 from dcmtether.derived_mr import DerivedMRResult
 from dcmtether.forward import Outcome
 from dcmtether.manifest import ManifestUpdate
+from dcmtether.merge import MergedGroup, MergeResult
 from dcmtether.scanning import Status
 
 SUMMARY = ScanSummary(
@@ -75,3 +76,27 @@ def test_dcm_and_mr_lines():
     assert report.mr_lines(DerivedMRResult(list(paths), "labels", 0.0)) == [
         "Wrote 2 derived MR images (labels)."
     ]
+
+
+def test_merge_lines_and_ok():
+    path = Path("merged.nii.gz")
+    result = MergeResult(
+        (
+            MergedGroup((4, 5), 2, path=path, no_tether="different scaling"),
+            MergedGroup((6, 7), 2, path=path, replaced=True),
+            MergedGroup((8, 9), 2, path=path, not_replaced="no tether.json"),
+            MergedGroup((1, 2), 2, skipped="grids differ"),
+        )
+    )
+    assert report.merge_lines(result) == [
+        "Merged series #4, #5 (2 volumes).",
+        "  no tether.json (different scaling): to-dcm needs the single series",
+        "Merged series #6, #7 (2 volumes); replaced the single series.",
+        "Merged series #8, #9 (2 volumes).",
+        "  not replaced (no tether.json): the single series stay",
+        "Not merged: series #1, #2: grids differ.",
+    ]
+    assert report.merge_lines(MergeResult(())) == ["No series to merge."]
+    assert report.merge_ok(MergeResult((MergedGroup((1, 2), 2, skipped="x"),)), False)
+    assert not report.merge_ok(MergeResult((MergedGroup((1, 2), 2, skipped="x"),)), True)
+    assert not report.merge_ok(result, False)  # a group was not replaced
