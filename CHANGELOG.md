@@ -20,6 +20,8 @@ file formats).
 
 ### Changed
 
+- Desktop app: modern Windows 11 look (Sun Valley theme via `sv-ttk`), following the system's
+  light or dark mode, with a "Dark mode" switch. New dependencies: `sv-ttk` and `darkdetect`.
 - Desktop app: the log is hidden by default ("Show log" shows it; it opens by itself when a run
   had problems or failed). The status for a run with problems now says "(see log)".
 

@@ -39,6 +39,10 @@ counts, and series by manifest id with the reason when something was not convert
 hidden by default; tick "Show log" to see it. It opens by itself when a run had problems or
 failed. The choice is not stored.
 
+The window uses the Sun Valley theme and starts in light or dark mode like the system. The
+"Dark mode" switch under the progress bar changes it for the running window; like the log, the
+choice is not stored.
+
 ## Privacy
 
 The window never shows patient names, UIDs or paths, and the app stores nothing: no settings,
