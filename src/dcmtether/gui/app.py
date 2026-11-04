@@ -49,12 +49,13 @@ class App:
         self.full_name = tk.BooleanVar(value=False)
         self.compare_after = tk.BooleanVar(value=True)
         self.derivative = tk.StringVar(value="seg")
+        self.show_log = tk.BooleanVar(value=False)  # not stored: the app keeps no settings
         self._buttons: list[ttk.Button] = []
 
         root.title(TITLE)
         self._icons = _icons()  # keep references: Tk drops images that Python lets go of
         root.iconphoto(True, *self._icons)
-        root.minsize(640, 480)
+        root.minsize(640, 300)
         root.protocol("WM_DELETE_WINDOW", self.close)
         outer = ttk.Frame(root, padding=8)
         outer.pack(fill="both", expand=True)
@@ -75,19 +76,31 @@ class App:
         ttk.Label(progress, textvariable=self.count).grid(row=0, column=1, sticky="e")
         self.bar = ttk.Progressbar(progress, mode="determinate")
         self.bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        ttk.Checkbutton(
+            progress, text="Show log", variable=self.show_log, command=self._toggle_log
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
         progress.columnconfigure(0, weight=1)
 
-        output = ttk.Frame(outer)
-        output.pack(fill="both", expand=True, pady=(8, 0))
-        self.output = tk.Text(output, height=14, wrap="word", state="disabled")
-        scroll = ttk.Scrollbar(output, command=self.output.yview)
+        # The log is always filled; it is only shown on request (or when a run had problems).
+        self._log = ttk.Frame(outer)
+        self.output = tk.Text(self._log, height=14, wrap="word", state="disabled")
+        scroll = ttk.Scrollbar(self._log, command=self.output.yview)
         self.output.configure(yscrollcommand=scroll.set)
         self.output.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        ttk.Label(outer, text=f"{NOTICE}  v{__version__}", foreground="gray").pack(
-            anchor="e", pady=(8, 0)
-        )
+        self._footer = ttk.Label(outer, text=f"{NOTICE}  v{__version__}", foreground="gray")
+        self._footer.pack(anchor="e", pady=(8, 0))
+
+    def _toggle_log(self) -> None:
+        if self.show_log.get():
+            self._log.pack(fill="both", expand=True, pady=(8, 0), before=self._footer)
+        else:
+            self._log.pack_forget()
+
+    def _open_log(self) -> None:
+        self.show_log.set(True)
+        self._toggle_log()
 
     # --- layout helpers --------------------------------------------------------------------
 
@@ -284,10 +297,13 @@ class App:
                     self._write(lines)
                 case Done(lines, ok):
                     self._write(lines)
-                    self._finish("Done." if ok else "Done, with problems (see above).", full=True)
+                    if not ok:
+                        self._open_log()
+                    self._finish("Done." if ok else "Done, with problems (see log).", full=True)
                     return
                 case Failed(text):
                     self._write([f"Error: {text}"])
+                    self._open_log()
                     self._finish("Failed.")
                     self._show_error(text)
                     return
