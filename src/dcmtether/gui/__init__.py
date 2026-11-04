@@ -33,6 +33,13 @@ def self_test() -> list[str]:
         (resources.files("dcmtether.gui") / f"icon-{size}.png").is_file() for size in (32, 64, 256)
     ):
         problems.append("window icons missing")
+    try:
+        import sv_ttk
+
+        if not sv_ttk.TCL_THEME_FILE_PATH.is_file():
+            problems.append("sv_ttk theme files missing")
+    except ImportError:
+        problems.append("sv_ttk missing")
     from pydicom.pixels.decoders.base import get_decoder
 
     from dcmtether.scanning import LOSSLESS_COMPRESSED_TRANSFER_SYNTAXES
@@ -64,9 +71,11 @@ def main() -> None:
         sys.exit(_report_self_test())
     import tkinter as tk
 
+    from dcmtether.gui import theme
     from dcmtether.gui.app import App
 
     _dpi_aware()
     root = tk.Tk()
+    theme.apply(theme.system_theme())
     App(root)
     root.mainloop()

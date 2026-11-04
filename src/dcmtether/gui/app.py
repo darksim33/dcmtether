@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from dcmtether import __version__, api, report
 from dcmtether.errors import DcmtetherError
+from dcmtether.gui import theme
 from dcmtether.gui.worker import Done, Failed, Lines, Progress, Task, Worker
 from dcmtether.merge import parse_ids
 
@@ -59,6 +60,7 @@ class App:
         self.derivative = tk.StringVar(value="seg")
         self.placement = tk.StringVar(value="merged")
         self.show_log = tk.BooleanVar(value=False)  # not stored: the app keeps no settings
+        self.dark_mode = tk.BooleanVar(value=theme.current() == "dark")  # follows the system
         self._buttons: list[ttk.Button] = []
 
         root.title(TITLE)
@@ -89,6 +91,13 @@ class App:
         ttk.Checkbutton(
             progress, text="Show log", variable=self.show_log, command=self._toggle_log
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(
+            progress,
+            text="Dark mode",
+            style="Switch.TCheckbutton",
+            variable=self.dark_mode,
+            command=self._toggle_theme,
+        ).grid(row=2, column=1, sticky="e", pady=(4, 0))
         progress.columnconfigure(0, weight=1)
 
         # The log is always filled; it is only shown on request (or when a run had problems).
@@ -99,8 +108,13 @@ class App:
         self.output.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        self._footer = ttk.Label(outer, text=f"{NOTICE}  v{__version__}", foreground="gray")
+        self._footer = ttk.Label(outer, text=f"{NOTICE}  v{__version__}", style="Hint.TLabel")
         self._footer.pack(anchor="e", pady=(8, 0))
+        theme.restyle(self.output)
+
+    def _toggle_theme(self) -> None:
+        theme.apply("dark" if self.dark_mode.get() else "light")
+        theme.restyle(self.output)
 
     def _toggle_log(self) -> None:
         if self.show_log.get():
@@ -131,7 +145,7 @@ class App:
         frame = ttk.Frame(tabs, padding=8)
         frame.columnconfigure(1, weight=1)
         tabs.add(frame, text=title)
-        ttk.Label(frame, text=hint, foreground="gray").grid(
+        ttk.Label(frame, text=hint, style="Hint.TLabel").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 6)
         )
         return frame
@@ -162,7 +176,7 @@ class App:
         )
         self._path_row(frame, 1, "source", "DICOM folder", _DIRECTORY)
         self._path_row(frame, 2, "dataset", "Dataset folder", _DIRECTORY)
-        ttk.Label(frame, text="Empty: written into the DICOM folder.", foreground="gray").grid(
+        ttk.Label(frame, text="Empty: written into the DICOM folder.", style="Hint.TLabel").grid(
             row=3, column=1, sticky="w", padx=4
         )
         ttk.Checkbutton(
@@ -181,7 +195,7 @@ class App:
         ids = self.fields.setdefault("merge_ids", tk.StringVar())
         ttk.Entry(frame, textvariable=ids, width=20).grid(row=2, column=1, sticky="w", padx=4)
         ttk.Label(
-            frame, text="e.g. 4,5,6 — empty: find the groups automatically.", foreground="gray"
+            frame, text="e.g. 4,5,6 — empty: find the groups automatically.", style="Hint.TLabel"
         ).grid(row=3, column=1, sticky="w", padx=4)
         places = ttk.Frame(frame)
         places.grid(row=4, column=1, sticky="w", padx=4)
