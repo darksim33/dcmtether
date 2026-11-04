@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from roundtrip import output_rows
 from synthetic import SeriesSpec, make_series, write_series
+from test_merge import _b_series
 from test_pmap import META as PMAP_META
 from test_seg import META as SEG_META
 
@@ -257,3 +258,47 @@ def test_log_opens_when_a_run_fails(app, tmp_path):
     _press(app, app.convert)
     assert app.show_log.get() and app._log.winfo_manager() == "pack"
     assert app.status.get() == "Failed."
+
+
+def _ivim_dataset(app, tmp_path):
+    src = tmp_path / "src"
+    for number, b_value in ((5, 0), (6, 50), (7, 800)):
+        write_series(_b_series(b_value, number), src / f"s{number}")
+    app.fields["source"].set(str(src))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    _press(app, app.convert)
+    app.fields["merge_dataset"].set(str(tmp_path / "dataset"))
+
+
+def test_merge_finds_the_groups(app, tmp_path):
+    _ivim_dataset(app, tmp_path)
+    text = _press(app, app.merge)
+    assert "(3 volumes)." in text and text.count("Merged series") == 1
+    assert app.status.get() == "Done." and not app.show_log.get()
+    assert list((tmp_path / "dataset" / "derivatives" / "merged").rglob("*_desc-merged_dwi.nii.gz"))
+    assert float(app.bar["value"]) == float(app.bar["maximum"])
+    _no_secrets(text, tmp_path)
+
+
+def test_merge_ids_are_checked(app, tmp_path):
+    _ivim_dataset(app, tmp_path)
+    app.fields["merge_ids"].set("4,x")
+    app.merge()
+    assert app.errors[-1] == "expected manifest ids like 4,5,6"
+    app.fields["merge_ids"].set("1")
+    text = _press(app, app.merge)
+    assert app.status.get() == "Failed." and "name at least two different series" in text
+    assert app.errors[-1] == "name at least two different series"
+
+
+def test_merge_replace_asks_first(app, tmp_path, monkeypatch):
+    _ivim_dataset(app, tmp_path)
+    asked = []
+    monkeypatch.setattr(app, "_confirm", lambda text: asked.append(text) or False)
+    app.placement.set("replace")
+    app.merge()
+    assert len(asked) == 1 and not app.worker.busy
+    assert not list((tmp_path / "dataset").rglob("*_desc-merged_dwi.nii.gz"))
+    monkeypatch.setattr(app, "_confirm", lambda text: True)
+    text = _press(app, app.merge)
+    assert "replaced the single series" in text
