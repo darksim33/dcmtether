@@ -112,7 +112,7 @@ def _press(app, command, timeout: float = 120) -> str:
     while (
         app.worker.busy
         or app.status.get() in ("Working…",)
-        or not app.status.get().endswith(("Done.", "(see above).", "Failed."))
+        or not app.status.get().endswith(("Done.", "(see log).", "Failed."))
     ):
         app.root.update()
         if time.monotonic() > deadline:
@@ -168,7 +168,7 @@ def test_failures_and_errors(app, tmp_path):
     app.fields["dataset"].set(str(tmp_path / "dataset"))
     text = _press(app, app.convert)
     assert "series #1 failed: PatientName is missing" in text
-    assert app.status.get() == "Done, with problems (see above)."
+    assert app.status.get() == "Done, with problems (see log)."
 
     app.fields["source"].set(str(tmp_path / "missing"))
     text = _press(app, app.convert)
@@ -232,3 +232,28 @@ def test_progress_block_shows_counts_and_stays_full_after_a_run(app, tmp_path):
     app.fields["rebuilt"].set(str(src / "a"))
     _press(app, app.compare)
     assert float(app.bar["value"]) == float(app.bar["maximum"]) == 1
+
+
+def test_log_is_hidden_by_default_but_filled(app, tmp_path):
+    src = tmp_path / "src"
+    write_series(make_series(SeriesSpec(series_number=1)), src / "a")
+    app.fields["source"].set(str(src))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    assert not app.show_log.get() and not app._log.winfo_manager()
+    text = _press(app, app.convert)
+    assert "Converted 1 series, 0 failed." in text  # collected while hidden
+    assert app.status.get() == "Done." and not app._log.winfo_manager()
+    app.show_log.set(True)
+    app._toggle_log()
+    assert app._log.winfo_manager() == "pack"
+    app.show_log.set(False)
+    app._toggle_log()
+    assert not app._log.winfo_manager()
+
+
+def test_log_opens_when_a_run_fails(app, tmp_path):
+    app.fields["source"].set(str(tmp_path / "missing"))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    _press(app, app.convert)
+    assert app.show_log.get() and app._log.winfo_manager() == "pack"
+    assert app.status.get() == "Failed."
