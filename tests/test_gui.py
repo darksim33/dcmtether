@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from roundtrip import output_rows
 from synthetic import SeriesSpec, make_series, write_series
+from test_merge import _b_series
 from test_pmap import META as PMAP_META
 from test_seg import META as SEG_META
 
@@ -112,7 +113,7 @@ def _press(app, command, timeout: float = 120) -> str:
     while (
         app.worker.busy
         or app.status.get() in ("Working…",)
-        or not app.status.get().endswith(("Done.", "(see above).", "Failed."))
+        or not app.status.get().endswith(("Done.", "(see log).", "Failed."))
     ):
         app.root.update()
         if time.monotonic() > deadline:
@@ -142,6 +143,7 @@ def test_convert_rebuild_and_compare(app, tmp_path):
     assert "Manifest: 1 new series, 0 rescanned, 0 unchanged." in text
     assert "Converted 1 series, 0 failed." in text
     assert app.status.get() == "Done."
+    assert float(app.bar["value"]) == float(app.bar["maximum"])  # a finished run leaves it full
     _no_secrets(text, tmp_path)
 
     nifti = tmp_path / "dataset" / output_rows(tmp_path / "dataset")[0]["nifti_path"]
@@ -167,7 +169,7 @@ def test_failures_and_errors(app, tmp_path):
     app.fields["dataset"].set(str(tmp_path / "dataset"))
     text = _press(app, app.convert)
     assert "series #1 failed: PatientName is missing" in text
-    assert app.status.get() == "Done, with problems (see above)."
+    assert app.status.get() == "Done, with problems (see log)."
 
     app.fields["source"].set(str(tmp_path / "missing"))
     text = _press(app, app.convert)
@@ -213,3 +215,90 @@ def test_derivatives(app, tmp_path, kind, meta, expected):
     assert expected in text, text
     assert output.exists()
     _no_secrets(text, tmp_path)
+
+
+def test_progress_block_shows_counts_and_stays_full_after_a_run(app, tmp_path):
+    src = tmp_path / "src"
+    write_series(make_series(SeriesSpec(series_number=1)), src / "a")
+    app.fields["source"].set(str(src))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    seen = []
+    original = app.count.set
+    app.count.set = lambda value: (seen.append(value), original(value))[1]
+    _press(app, app.convert)
+    assert any(" / " in value for value in seen)  # "n / total" while counting
+    assert str(app.bar["mode"]) == "determinate"
+    # a command without steps to count (Compare) still ends with a full bar
+    app.fields["original"].set(str(src / "a"))
+    app.fields["rebuilt"].set(str(src / "a"))
+    _press(app, app.compare)
+    assert float(app.bar["value"]) == float(app.bar["maximum"]) == 1
+
+
+def test_log_is_hidden_by_default_but_filled(app, tmp_path):
+    src = tmp_path / "src"
+    write_series(make_series(SeriesSpec(series_number=1)), src / "a")
+    app.fields["source"].set(str(src))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    assert not app.show_log.get() and not app._log.winfo_manager()
+    text = _press(app, app.convert)
+    assert "Converted 1 series, 0 failed." in text  # collected while hidden
+    assert app.status.get() == "Done." and not app._log.winfo_manager()
+    app.show_log.set(True)
+    app._toggle_log()
+    assert app._log.winfo_manager() == "pack"
+    app.show_log.set(False)
+    app._toggle_log()
+    assert not app._log.winfo_manager()
+
+
+def test_log_opens_when_a_run_fails(app, tmp_path):
+    app.fields["source"].set(str(tmp_path / "missing"))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    _press(app, app.convert)
+    assert app.show_log.get() and app._log.winfo_manager() == "pack"
+    assert app.status.get() == "Failed."
+
+
+def _ivim_dataset(app, tmp_path):
+    src = tmp_path / "src"
+    for number, b_value in ((5, 0), (6, 50), (7, 800)):
+        write_series(_b_series(b_value, number), src / f"s{number}")
+    app.fields["source"].set(str(src))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    _press(app, app.convert)
+    app.fields["merge_dataset"].set(str(tmp_path / "dataset"))
+
+
+def test_merge_finds_the_groups(app, tmp_path):
+    _ivim_dataset(app, tmp_path)
+    text = _press(app, app.merge)
+    assert "(3 volumes)." in text and text.count("Merged series") == 1
+    assert app.status.get() == "Done." and not app.show_log.get()
+    assert list((tmp_path / "dataset" / "derivatives" / "merged").rglob("*_desc-merged_dwi.nii.gz"))
+    assert float(app.bar["value"]) == float(app.bar["maximum"])
+    _no_secrets(text, tmp_path)
+
+
+def test_merge_ids_are_checked(app, tmp_path):
+    _ivim_dataset(app, tmp_path)
+    app.fields["merge_ids"].set("4,x")
+    app.merge()
+    assert app.errors[-1] == "expected manifest ids like 4,5,6"
+    app.fields["merge_ids"].set("1")
+    text = _press(app, app.merge)
+    assert app.status.get() == "Failed." and "name at least two different series" in text
+    assert app.errors[-1] == "name at least two different series"
+
+
+def test_merge_replace_asks_first(app, tmp_path, monkeypatch):
+    _ivim_dataset(app, tmp_path)
+    asked = []
+    monkeypatch.setattr(app, "_confirm", lambda text: asked.append(text) or False)
+    app.placement.set("replace")
+    app.merge()
+    assert len(asked) == 1 and not app.worker.busy
+    assert not list((tmp_path / "dataset").rglob("*_desc-merged_dwi.nii.gz"))
+    monkeypatch.setattr(app, "_confirm", lambda text: True)
+    text = _press(app, app.merge)
+    assert "replaced the single series" in text

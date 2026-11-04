@@ -17,6 +17,7 @@ from dcmtether import __version__, api, report
 from dcmtether.api import ScanSummary
 from dcmtether.errors import DcmtetherError
 from dcmtether.manifest import ManifestUpdate
+from dcmtether.merge import MergeError, parse_ids
 
 _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
@@ -75,65 +76,6 @@ def main() -> None:
 # --- scanning and conversion -------------------------------------------------------------------
 
 
-def _report_scan(
-    summary: ScanSummary, only: set[int] | None = None, body_part: bool = False
-) -> None:
-    """Counts, then the non-supported series (by manifest id; every series with
-    ``body_part``) and the skipped files."""
-    click.echo(
-        f"Scanned {summary.n_files} files: {summary.n_instances} DICOM instances in "
-        f"{len(summary.series)} series, {plural(summary.n_skipped, 'file')} skipped."
-    )
-    for status in Status:
-        click.echo(f"  {status.value + ':':<13}{summary.count(status)}")
-    for series in summary.series:
-        if only is not None and series.id not in only:
-            continue
-        if series.status is Status.SUPPORTED and not body_part:
-            continue
-        details = plural(series.n_instances, "instance")
-        if body_part:
-            details += f", body part {series.body_part or 'not set'}"
-        line = f"  series #{series.id} ({details}) {series.status.value}"
-        if series.status is not Status.SUPPORTED:
-            line += f": {'; '.join(series.reasons)}"
-        click.echo(line)
-    for reason, n in summary.skipped.items():
-        click.echo(f"  skipped {plural(n, 'file')}: {reason}")
-
-
-def _report_update(summary: ScanSummary, update: ManifestUpdate, body_part: bool) -> None:
-    _report_scan(summary, only=set(update.new) | set(update.rescanned), body_part=body_part)
-    click.echo(
-        f"Manifest: {len(update.new)} new series, {len(update.rescanned)} rescanned, "
-        f"{len(update.unchanged)} unchanged."
-    )
-    for series_id in update.changed_after_conversion:
-        click.echo(
-            f"  series #{series_id}: source files changed after conversion (not "
-            "reconverted; remove its outputs and manifest entry to redo it)"
-        )
-    for series_id in update.missing:
-        click.echo(f"  series #{series_id}: no longer found in SOURCE (kept in the manifest)")
-
-
-def _report_conversion(result: ConversionResult, verbose: bool) -> None:
-    """Console lines for a conversion; exit code 1 if a series failed."""
-    click.echo(f"Converted {len(result.converted)} series, {len(result.failed)} failed.")
-    for outcome in result.outcomes:
-        if outcome.ok:
-            if verbose:
-                click.echo(
-                    f"  series #{outcome.series_id} converted ({plural(outcome.outputs, 'output')})"
-                )
-            if outcome.warning:
-                click.echo(f"  series #{outcome.series_id} warning: {outcome.warning}")
-        else:
-            click.echo(f"  series #{outcome.series_id} failed: {outcome.message}")
-    if not result.ok:
-        raise click.exceptions.Exit(1)
-
-
 @main.command()
 @click.argument("source", type=_existing_dir)
 @click.argument("dataset", type=_output_dir)
@@ -145,7 +87,7 @@ def scan(source: Path, dataset: Path, body_part: bool) -> None:
     """
     with _errors():
         summary = api.scan(source, dataset, progress=_progress)
-    _report_scan(summary, body_part=body_part)
+    _echo(report.scan_lines(summary, body_part=body_part))
     click.echo("Manifest written.")
 
 
@@ -190,20 +132,20 @@ def run(
     """
 
     def scanned(summary: ScanSummary, update: ManifestUpdate) -> None:
-        _report_update(summary, update, body_part)
+        _echo(report.update_lines(summary, update, body_part))
 
     with _errors():
         result = api.run(source, dataset, full_name=full_name, progress=_progress, _scanned=scanned)
-    _report_conversion(result.conversion, verbose)
+    _echo(report.conversion_lines(result.conversion, verbose))
+    if not result.ok:
+        raise click.exceptions.Exit(1)
 
 
 def _series_ids(ctx, param, value: str | None) -> list[int] | None:
-    if value is None:
-        return None
     try:
-        return [int(v) for v in value.split(",") if v.strip()]
-    except ValueError:
-        raise click.BadParameter("expected manifest ids like 4,5,6") from None
+        return parse_ids(value)
+    except MergeError as exc:
+        raise click.BadParameter(str(exc)) from None
 
 
 @main.command()
@@ -235,21 +177,8 @@ def merge(dataset: Path, ids: list[int] | None, in_place: bool, replace: bool) -
         result = api.merge_series(
             dataset, ids, in_place=in_place, replace=replace, progress=_progress
         )
-    if not result.groups:
-        click.echo("No series to merge.")
-    for group in result.groups:
-        listed = ", ".join(f"#{i}" for i in group.series_ids)
-        if group.path is not None:
-            replaced = "; replaced the single series" if group.replaced else ""
-            click.echo(f"Merged series {listed} ({plural(group.n_volumes, 'volume')}){replaced}.")
-            if group.no_tether:
-                click.echo(f"  no tether.json ({group.no_tether}): to-dcm needs the single series")
-            if group.not_replaced:
-                click.echo(f"  not replaced ({group.not_replaced}): the single series stay")
-        else:
-            click.echo(f"Not merged: series {listed}: {group.skipped}.")
-    not_replaced = any(g.not_replaced for g in result.groups)
-    if (ids is not None and result.skipped) or not_replaced:
+    _echo(report.merge_lines(result))
+    if not report.merge_ok(result, ids is not None):
         raise click.exceptions.Exit(1)
 
 

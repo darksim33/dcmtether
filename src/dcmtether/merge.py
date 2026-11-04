@@ -59,6 +59,16 @@ class MergeError(DcmtetherError, ValueError):
     pass
 
 
+def parse_ids(text: str | None) -> list[int] | None:
+    """Manifest ids from ``"4,5,6"``; ``None`` for no text (find groups automatically)."""
+    if text is None or not text.strip():
+        return None
+    try:
+        return [int(v) for v in text.split(",") if v.strip()]
+    except ValueError:
+        raise MergeError("expected manifest ids like 4,5,6") from None
+
+
 #: Grouping rules, recorded in the merged sidecar (``DcmTether.MergeRule``).
 XA_SPLIT = "siemens-xa-split"
 DIFFUSION_PROTOCOL = "diffusion-protocol"

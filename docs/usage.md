@@ -69,6 +69,8 @@ off in a terminal as well.
 
 ### `merge DATASET [--ids 4,5,6] [--in-place | --replace]` (experimental)
 
+The desktop app has the same command on its Merge tab ([GUI](gui.md)).
+
 Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own; `merge`
 adds one 4D NIfTI + sidecar + `*.tether.json` per measurement (`…_desc-merged_dwi.nii.gz`).
 Where it goes:
