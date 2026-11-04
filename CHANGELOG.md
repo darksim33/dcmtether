@@ -9,9 +9,24 @@ file formats).
 
 ### Added
 
+- Desktop app: a Merge tab (the CLI's `merge`; replacing the single series asks first) and a
+  progress block (label, `n / total` count and a bar that stays full after a run).
+- `merge.parse_ids` and `report.merge_lines` / `report.merge_ok`: the id parsing and the result
+  lines of `merge`, shared by the CLI and the GUI. `scan_lines` and `update_lines` take
+  `body_part`.
 - Diffusion b-matrix in the sidecar: `DcmTether.PerVolume.DiffusionBMatrix` (Bxx, Bxy, Bxz, Byy,
   Byz, Bzz per volume) from the standard enhanced-MR elements `DiffusionBValueXX`–`ZZ` or
   Siemens' `(0019,xx27)`; also in merged sidecars.
+
+### Changed
+
+- Desktop app: the log is hidden by default ("Show log" shows it; it opens by itself when a run
+  had problems or failed). The status for a run with problems now says "(see log)".
+
+### Fixed
+
+- `dcmtether.cli` could not be imported after the GUI branch was merged (leftover scan and
+  conversion helpers without their imports); the CLI uses the shared `report` lines again.
 
 ## [0.2.0] - 2026-10-23
 

@@ -19,6 +19,11 @@ files, compare two series, and write derivatives back as DICOM. Research use onl
   write the dataset into the DICOM folder itself. "Full patient name in subject labels" is the
   `--full-name` option; it is fixed for a dataset on its first conversion. Safe to run again:
   new series are added, failed ones retried, converted ones left alone.
+- **Merge** (experimental) — series of one measurement (e.g. one per b-value) of a converted
+  dataset → one 4D NIfTI (the CLI's `merge`). Leave the series ids empty to find the groups
+  automatically, or enter manifest ids like `4,5,6`. The merged files go to
+  `derivatives/merged/`, beside the converted series, or beside them with the single series
+  removed (asks first; see the warning in [Usage](usage.md)).
 - **Rebuild** — a converted NIfTI (with its `*.tether.json` next to it) → the original DICOM
   files in the output folder (`to-dcm`), then, if ticked, a comparison with the original folder
   (`compare`).
@@ -28,8 +33,11 @@ files, compare two series, and write derivatives back as DICOM. Research use onl
   JSON file; examples are in [`docs/examples/`](examples/). SEG and Parametric Map write one
   file, derived MR images a folder.
 
-The output pane shows what the CLI would print: counts, and series by manifest id with the
-reason when something was not converted. The status bar shows progress.
+The progress bar under the tabs shows what the command is doing (a fixed label such as "Merging"
+and a count) and stays full when it has finished. The log shows what the CLI would print:
+counts, and series by manifest id with the reason when something was not converted. It is
+hidden by default; tick "Show log" to see it. It opens by itself when a run had problems or
+failed. The choice is not stored.
 
 ## Privacy
 
