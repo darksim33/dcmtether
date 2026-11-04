@@ -17,6 +17,7 @@ from dcmtether import __version__, api, report
 from dcmtether.api import ScanSummary
 from dcmtether.errors import DcmtetherError
 from dcmtether.manifest import ManifestUpdate
+from dcmtether.merge import MergeError, parse_ids
 
 _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
@@ -141,12 +142,10 @@ def run(
 
 
 def _series_ids(ctx, param, value: str | None) -> list[int] | None:
-    if value is None:
-        return None
     try:
-        return [int(v) for v in value.split(",") if v.strip()]
-    except ValueError:
-        raise click.BadParameter("expected manifest ids like 4,5,6") from None
+        return parse_ids(value)
+    except MergeError as exc:
+        raise click.BadParameter(str(exc)) from None
 
 
 @main.command()
