@@ -8,6 +8,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.5.0",
+    "darkdetect>=0.8.0",
     "highdicom>=0.28.2",
     "nibabel>=5.4.2",
     "numpy>=2.5.3",
@@ -16,6 +17,7 @@ dependencies = [
     "pylibjpeg-libjpeg>=2.4.0",
     "pylibjpeg-openjpeg>=2.6.0",
     "pylibjpeg-rle>=2.2.0",
+    "sv-ttk>=2.6.1",
     "tqdm>=4.70.1",
 ]
 
