@@ -11,7 +11,9 @@ from importlib import resources
 from tkinter import filedialog, messagebox, ttk
 
 from dcmtether import __version__, api, report
+from dcmtether.errors import DcmtetherError
 from dcmtether.gui.worker import Done, Failed, Lines, Progress, Task, Worker
+from dcmtether.merge import parse_ids
 
 POLL_MS = 100
 TITLE = "dcmtether"
@@ -26,6 +28,12 @@ _FILETYPES = {
 }
 #: Window and taskbar icon (the logo of docs/assets), small to large.
 ICON_SIZES = (32, 64, 256)
+#: Where a merge writes: derivatives/merged, beside the series, or beside them and replacing them.
+PLACEMENTS = {
+    "merged": "In derivatives/merged (the single series stay)",
+    "in_place": "Beside the converted series",
+    "replace": "Beside the series, then remove the single series",
+}
 DERIVATIVES = {
     "seg": "Segmentation (SEG)",
     "pmap": "Parametric Map",
@@ -49,6 +57,7 @@ class App:
         self.full_name = tk.BooleanVar(value=False)
         self.compare_after = tk.BooleanVar(value=True)
         self.derivative = tk.StringVar(value="seg")
+        self.placement = tk.StringVar(value="merged")
         self.show_log = tk.BooleanVar(value=False)  # not stored: the app keeps no settings
         self._buttons: list[ttk.Button] = []
 
@@ -64,6 +73,7 @@ class App:
         tabs.pack(fill="x")
         self.tabs = tabs
         self._convert_tab(tabs)
+        self._merge_tab(tabs)
         self._rebuild_tab(tabs)
         self._compare_tab(tabs)
         self._derivatives_tab(tabs)
@@ -160,6 +170,27 @@ class App:
         ).grid(row=4, column=1, sticky="w", padx=4)
         self._run_button(frame, 5, "Convert", self.convert)
 
+    def _merge_tab(self, tabs: ttk.Notebook) -> None:
+        frame = self._tab(
+            tabs,
+            "Merge",
+            "Experimental: series of one measurement (e.g. one per b-value) → one 4D NIfTI.",
+        )
+        self._path_row(frame, 1, "merge_dataset", "Dataset folder", _DIRECTORY)
+        ttk.Label(frame, text="Series ids").grid(row=2, column=0, sticky="w", pady=2)
+        ids = self.fields.setdefault("merge_ids", tk.StringVar())
+        ttk.Entry(frame, textvariable=ids, width=20).grid(row=2, column=1, sticky="w", padx=4)
+        ttk.Label(
+            frame, text="e.g. 4,5,6 — empty: find the groups automatically.", foreground="gray"
+        ).grid(row=3, column=1, sticky="w", padx=4)
+        places = ttk.Frame(frame)
+        places.grid(row=4, column=1, sticky="w", padx=4)
+        for value, text in PLACEMENTS.items():
+            ttk.Radiobutton(places, text=text, value=value, variable=self.placement).pack(
+                anchor="w"
+            )
+        self._run_button(frame, 5, "Merge", self.merge)
+
     def _rebuild_tab(self, tabs: ttk.Notebook) -> None:
         frame = self._tab(tabs, "Rebuild", "Converted NIfTI → the original DICOM files.")
         self._path_row(frame, 1, "rebuild_nifti", "NIfTI file", _NIFTI)
@@ -226,6 +257,33 @@ class App:
             return report.conversion_lines(result.conversion), result.ok
 
         self._start("Convert", task)
+
+    def merge(self) -> None:
+        if self._missing("merge_dataset"):
+            return
+        try:
+            ids = parse_ids(self.value("merge_ids"))
+        except DcmtetherError as exc:
+            self._show_error(str(exc))
+            return
+        placement = self.placement.get()
+        if placement == "replace" and not self._confirm(
+            "This removes the single series' files once their merged file is written. Continue?"
+        ):
+            return
+        dataset = self.value("merge_dataset")
+
+        def task(progress, show) -> tuple[list[str], bool]:
+            result = api.merge_series(
+                dataset,
+                ids,
+                in_place=placement != "merged",
+                replace=placement == "replace",
+                progress=progress,
+            )
+            return report.merge_lines(result), report.merge_ok(result, ids is not None)
+
+        self._start("Merge", task)
 
     def rebuild(self) -> None:
         compare = self.compare_after.get()
@@ -336,6 +394,9 @@ class App:
     def text(self) -> str:
         """The output pane's content."""
         return self.output.get("1.0", "end-1c")
+
+    def _confirm(self, text: str) -> bool:
+        return messagebox.askyesno(TITLE, text, parent=self.root)
 
     def _show_error(self, text: str) -> None:
         messagebox.showerror(TITLE, text, parent=self.root)
