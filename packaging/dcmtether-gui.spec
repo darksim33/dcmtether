@@ -35,7 +35,10 @@ for package in (
 analysis = Analysis(
     [str(ROOT / "packaging" / "launch_gui.py")],
     pathex=[str(ROOT / "src")],
-    datas=metadata + collect_data_files("highdicom") + collect_data_files("dcmtether"),
+    datas=metadata
+    + collect_data_files("highdicom")
+    + collect_data_files("dcmtether")
+    + collect_data_files("sv_ttk"),
     hiddenimports=["libjpeg", "openjpeg", "rle", "jpeg_ls"],
     excludes=[
         "pytest",
