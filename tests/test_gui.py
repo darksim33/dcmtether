@@ -302,3 +302,48 @@ def test_merge_replace_asks_first(app, tmp_path, monkeypatch):
     monkeypatch.setattr(app, "_confirm", lambda text: True)
     text = _press(app, app.merge)
     assert "replaced the single series" in text
+
+
+# --- theme -------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def light_theme(tk_root):
+    from dcmtether.gui import theme
+
+    theme.apply("light")
+    yield theme
+    theme.apply("light")
+
+
+def test_dark_mode_switch_changes_theme_and_log_colors(light_theme, app):
+    assert not app.dark_mode.get()
+    assert str(app.output.cget("background")) == light_theme.COLORS["light"]["base"]
+
+    app.dark_mode.set(True)
+    app._toggle_theme()
+
+    assert light_theme.current() == "dark"
+    assert str(app.output.cget("background")) == light_theme.COLORS["dark"]["base"]
+    assert str(app.output.cget("foreground")) == light_theme.COLORS["dark"]["text"]
+
+    app.dark_mode.set(False)
+    app._toggle_theme()
+
+    assert light_theme.current() == "light"
+    assert str(app.output.cget("background")) == light_theme.COLORS["light"]["base"]
+
+
+def test_hint_labels_follow_the_theme(light_theme, app):
+    from tkinter import ttk
+
+    app.dark_mode.set(True)
+    app._toggle_theme()
+
+    assert ttk.Style().lookup("Hint.TLabel", "foreground") == light_theme.COLORS["dark"]["hint"]
+
+
+def test_system_theme_is_light_or_dark():
+    from dcmtether.gui import theme
+
+    assert theme.system_theme() in {"light", "dark"}
