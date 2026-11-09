@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dcmtether import derived_mr, merge, pmap, reverse, scanning, seg, tether
+from dcmtether import derived_mr, merge, pmap, reverse, scanning, seg, tether, uids
 from dcmtether.comparison import Report, compare_series, dicom_files
 from dcmtether.derived_mr import DerivedMRResult
 from dcmtether.forward import Outcome, convert_dataset
@@ -387,19 +387,38 @@ def compare(original: StrPath, rebuilt: StrPath) -> Report:
 # --- derivatives -------------------------------------------------------------------------------
 
 
+def _check_uid_options(uid_root: str | None, uid_source: bool) -> str | None:
+    """Fail fast on bad UID options (before any file is read); the checked root."""
+    if uid_root is not None and uid_source:
+        raise uids.UidError("--uid-root and --uid-source cannot be combined")
+    return None if uid_root is None else uids.check_root(uid_root)
+
+
 def to_seg(
-    nifti: StrPath, labels: StrPath, metadata: StrPath | dict, output: StrPath, *, log: bool = True
+    nifti: StrPath,
+    labels: StrPath,
+    metadata: StrPath | dict,
+    output: StrPath,
+    *,
+    uid_root: str | None = None,
+    uid_source: bool = False,
+    log: bool = True,
 ) -> SegResult:
     """Write a DICOM SEG for the label map ``labels`` on the grid of ``nifti``.
 
     ``nifti`` is a converted source (with its ``*.tether.json``); ``metadata`` is a dcmqi
-    segmentation template (path or loaded dict). Writes ``output`` (a new file).
+    segmentation template (path or loaded dict). Writes ``output`` (a new file). New UIDs are
+    synthetic ``2.25.`` UIDs, or start with ``uid_root`` (an organisation root) or, with
+    ``uid_source``, with the source series UID up to its last dot.
     """
+    uid_root = _check_uid_options(uid_root, uid_source)
     nifti, labels = _existing_file(nifti, "NIFTI"), _existing_file(labels, "LABELS")
     context, series_id = _source_log(nifti, "to-seg", log)
     with context as logger:
         template = _metadata(metadata, seg.parse_metadata, seg.load_metadata)
-        result = seg.to_seg(nifti, labels, template, Path(output))
+        result = seg.to_seg(
+            nifti, labels, template, Path(output), uid_root=uid_root, uid_source=uid_source
+        )
         logger.event(
             "written",
             series_id=series_id,
@@ -410,18 +429,28 @@ def to_seg(
 
 
 def to_pmap(
-    nifti: StrPath, map: StrPath, metadata: StrPath | dict, output: StrPath, *, log: bool = True
+    nifti: StrPath,
+    map: StrPath,
+    metadata: StrPath | dict,
+    output: StrPath,
+    *,
+    uid_root: str | None = None,
+    uid_source: bool = False,
+    log: bool = True,
 ) -> PmapResult:
     """Write a DICOM Parametric Map for ``map`` (e.g. ADC, QSM) on the grid of ``nifti``.
 
     ``metadata`` is a dcmqi parametric map template (path or loaded dict). Writes ``output``
-    (a new file).
+    (a new file). ``uid_root`` / ``uid_source`` as in ``to_seg``.
     """
+    uid_root = _check_uid_options(uid_root, uid_source)
     nifti, map = _existing_file(nifti, "NIFTI"), _existing_file(map, "MAP")
     context, series_id = _source_log(nifti, "to-pmap", log)
     with context as logger:
         template = _metadata(metadata, pmap.parse_metadata, pmap.load_metadata)
-        result = pmap.to_pmap(nifti, map, template, Path(output))
+        result = pmap.to_pmap(
+            nifti, map, template, Path(output), uid_root=uid_root, uid_source=uid_source
+        )
         logger.event("written", series_id=series_id, count=result.n_sources, kind=result.dtype)
         return result
 
@@ -432,18 +461,24 @@ def to_mr(
     metadata: StrPath | dict,
     output: StrPath,
     *,
+    uid_root: str | None = None,
+    uid_source: bool = False,
     log: bool = True,
 ) -> DerivedMRResult:
     """Write ``derivative`` as derived MR images (one per source slice) into ``output``.
 
     Fallback for PACS without SEG / Parametric Map support. ``metadata`` is a dcmqi SEG
     template (label map: label values as pixels) or parametric map template (map).
+    ``uid_root`` / ``uid_source`` as in ``to_seg``.
     """
+    uid_root = _check_uid_options(uid_root, uid_source)
     nifti = _existing_file(nifti, "NIFTI")
     derivative = _existing_file(derivative, "DERIVATIVE")
     context, series_id = _source_log(nifti, "to-mr", log)
     with context as logger:
         template = _metadata(metadata, derived_mr.parse_metadata, derived_mr.load_metadata)
-        result = derived_mr.to_derived_mr(nifti, derivative, template, Path(output))
+        result = derived_mr.to_derived_mr(
+            nifti, derivative, template, Path(output), uid_root=uid_root, uid_source=uid_source
+        )
         logger.event("written", series_id=series_id, count=len(result.paths), kind=result.kind)
         return result
