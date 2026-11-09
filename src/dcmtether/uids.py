@@ -77,6 +77,12 @@ def uid_prefix(
     return None, False
 
 
+def derived_number(source_uid: str, derivation: str, content_hash: str, role: str) -> int:
+    """The 128-bit number behind ``derived_uid`` (the same for every prefix)."""
+    name = "|".join((source_uid, derivation, content_hash, role))
+    return uuid.uuid5(NAMESPACE, name).int
+
+
 def derived_uid(
     source_uid: str, derivation: str, content_hash: str, role: str, root: str | None = None
 ) -> str:
@@ -85,8 +91,7 @@ def derived_uid(
     ``root`` (from ``uid_prefix``) replaces ``2.25``; the digits are then cut to fit 64
     characters (at least ``MIN_DIGITS`` remain).
     """
-    name = "|".join((source_uid, derivation, content_hash, role))
-    number = uuid.uuid5(NAMESPACE, name).int
+    number = derived_number(source_uid, derivation, content_hash, role)
     if root is None:
         return f"2.25.{number}"
     if not _is_root(root):
