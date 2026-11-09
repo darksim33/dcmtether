@@ -31,6 +31,7 @@ from dcmtether.derived import (
     uids_for,
     write,
 )
+from dcmtether.uids import uid_prefix
 
 #: Failures of Parametric Map creation (all derived-object failures share one type).
 PmapError = DerivedError
@@ -87,6 +88,8 @@ class PmapResult:
     #: Pixel data type written: float32, float64, uint16 or uint8.
     dtype: str
     n_sources: int
+    #: ``uid_source`` was asked for, but the source UID stem was not usable: synthetic UIDs.
+    uid_fallback: bool = False
 
 
 def _stored_values(img) -> tuple[np.ndarray, float, float]:
@@ -116,15 +119,25 @@ def _stored_values(img) -> tuple[np.ndarray, float, float]:
 
 
 def to_pmap(
-    source_nifti: Path, map_nifti: Path, metadata: PmapMetadata, output: Path
+    source_nifti: Path,
+    map_nifti: Path,
+    metadata: PmapMetadata,
+    output: Path,
+    *,
+    uid_root: str | None = None,
+    uid_source: bool = False,
 ) -> PmapResult:
-    """Write a DICOM Parametric Map for ``map_nifti`` on the grid of ``source_nifti``."""
+    """Write a DICOM Parametric Map for ``map_nifti`` on the grid of ``source_nifti``.
+
+    ``uid_root`` / ``uid_source`` choose the prefix of the new UIDs (``uids.uid_prefix``).
+    """
     check_output(output)
     source = load_source(source_nifti)
+    root, uid_fallback = uid_prefix(source.series_instance_uid, uid_root, uid_source)
     stored, slope, intercept = _stored_values(load_on_grid(map_nifti, source, "map"))
     pixel_array = source.frames(stored)
     series_uid, sop_uid = uids_for(
-        source, "pmap", [metadata.canonical, repr((slope, intercept))], pixel_array
+        source, "pmap", [metadata.canonical, repr((slope, intercept))], pixel_array, root
     )
 
     low, high = pixel_array.min(), pixel_array.max()
@@ -169,4 +182,4 @@ def to_pmap(
         )
         parametric_map.SeriesDescription = series_description(metadata.series_description)
     write(parametric_map, output)
-    return PmapResult(output, pixel_array.dtype.name, len(source.images))
+    return PmapResult(output, pixel_array.dtype.name, len(source.images), uid_fallback)
