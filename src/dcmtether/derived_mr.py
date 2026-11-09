@@ -31,10 +31,10 @@ from dcmtether.derived import (
     CONTENT_DESCRIPTION,
     DerivedError,
     check_output,
+    content_digest,
     load_on_grid,
     load_source,
     series_description,
-    uids_for,
 )
 
 #: Failures of derived MR creation (all derived-object failures share one type).
@@ -101,6 +101,8 @@ class DerivedMRResult:
     #: The error comes from writing the rescale values as DS only (integer map: the stored
     #: values are exact), not from quantizing a float map to 16 bits.
     rounded: bool = False
+    #: ``uid_source`` was asked for, but the source UID stem was not usable: synthetic UIDs.
+    uid_fallback: bool = False
 
 
 def _label_pixels(path: Path, source, metadata: seg.SegMetadata):
@@ -190,9 +192,17 @@ def to_derived_mr(
     derivative_nifti: Path,
     metadata: seg.SegMetadata | pmap.PmapMetadata,
     output_dir: Path,
+    *,
+    uid_root: str | None = None,
+    uid_source: bool = False,
 ) -> DerivedMRResult:
-    """Write one derived MR image per source slice into ``output_dir`` (new files only)."""
+    """Write one derived MR image per source slice into ``output_dir`` (new files only).
+
+    ``uid_root`` / ``uid_source`` choose the prefix of the new UIDs (``uids.uid_prefix``); the
+    stem always comes from the source *series* UID, so all images share one prefix.
+    """
     source = load_source(source_nifti)
+    root, uid_fallback = uids.uid_prefix(source.series_instance_uid, uid_root, uid_source)
     if any("frames" in i for i in source.document["instances"]):
         raise DerivedMRError(
             "derived MR images from enhanced (multi-frame) sources are not supported"
@@ -231,8 +241,11 @@ def to_derived_mr(
         "rescale": rescale,
         "window": ((real_low + real_high) / 2, max(real_high - real_low, 1e-12)),
     }
-    series_uid, _ = uids_for(source, "derived-mr", [metadata.canonical], frames)
-    content = series_uid.removeprefix("2.25.")
+    digest = content_digest(source, "derived-mr", [metadata.canonical], frames)
+    series_uid = uids.derived_uid(source.series_instance_uid, "derived-mr", digest, "series", root)
+    # Each image UID hashes the series UID's digits without prefix: independent of the prefix
+    # and, for synthetic UIDs, the same value earlier versions used.
+    content = str(uids.derived_number(source.series_instance_uid, "derived-mr", digest, "series"))
 
     written_paths: list[Path] = []
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -241,7 +254,9 @@ def to_derived_mr(
             for n, (template, plane, target) in enumerate(
                 zip(source.originals, frames, targets, strict=True), start=1
             ):
-                uid = uids.derived_uid(template.SOPInstanceUID, "derived-mr", content, "instance")
+                uid = uids.derived_uid(
+                    template.SOPInstanceUID, "derived-mr", content, "instance", root
+                )
                 image = _image(template, plane, n, uid, series_uid, info)
                 partial = target.with_name(target.name + ".partial")
                 written_paths.append(partial)  # before writing: a failed write leaves a file
@@ -252,4 +267,6 @@ def to_derived_mr(
         for path in (*written_paths, *targets):
             path.unlink(missing_ok=True)
         raise
-    return DerivedMRResult(targets, "labels" if is_labels else "map", max_error, rounded)
+    return DerivedMRResult(
+        targets, "labels" if is_labels else "map", max_error, rounded, uid_fallback
+    )
