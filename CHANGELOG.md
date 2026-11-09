@@ -5,6 +5,16 @@ All notable changes to dcmtether are recorded here. The format follows
 [Semantic Versioning](https://semver.org/) (before 1.0, minor versions may break the CLI or
 file formats).
 
+## [Unreleased]
+
+### Added
+
+- `--uid-root ROOT` and `--uid-source` for `to-seg`, `to-pmap` and `to-mr` (API: `uid_root=`,
+  `uid_source=`): new Series and SOP Instance UIDs as `<ROOT>.<hash digits>` or starting with
+  the source series UID up to its last dot, instead of the synthetic `2.25.<hash>` (still the
+  default). The options cannot be combined; an unusable source stem falls back to `2.25.`
+  (`uid_fallback` on the results, a note on the CLI). The API adds `UidError`.
+
 ## [0.2.0] - 2026-10-23
 
 ### Added
