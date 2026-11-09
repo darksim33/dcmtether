@@ -418,6 +418,74 @@ class TestDerivedUids:
         assert list(tmp_path.iterdir()) == []
 
 
+def _cli_uid_commands(tmp_path: Path, nifti: Path) -> dict[str, list[str]]:
+    """CLI arguments (without UID options) of the three derivative commands."""
+    labels, values = _derivatives(tmp_path, nifti)
+    seg_meta, pmap_meta = tmp_path / "seg.json", tmp_path / "pmap.json"
+    seg_meta.write_text(json.dumps(SEG_META))
+    pmap_meta.write_text(json.dumps(PMAP_META))
+    out = tmp_path / "cli"
+    return {
+        "to-seg": ["to-seg", str(nifti), str(labels), str(seg_meta), str(out / "seg.dcm")],
+        "to-pmap": ["to-pmap", str(nifti), str(values), str(pmap_meta), str(out / "pm.dcm")],
+        "to-mr": ["to-mr", str(nifti), str(values), str(pmap_meta), str(out / "mr")],
+    }
+
+
+def _cli_written(command: str, tmp_path: Path) -> list:
+    out = tmp_path / "cli"
+    paths = sorted((out / "mr").iterdir()) if command == "to-mr" else list(out.iterdir())
+    return [pydicom.dcmread(p) for p in paths]
+
+
+class TestDerivedUidsCli:
+    """``--uid-root`` / ``--uid-source`` on to-seg, to-pmap and to-mr."""
+
+    @pytest.mark.parametrize("command", ["to-seg", "to-pmap", "to-mr"])
+    @pytest.mark.parametrize(
+        ("options", "prefix"),
+        [([], "2.25."), (["--uid-root", "1.5"], "1.5."), (["--uid-source"], "1.2.3.4.")],
+        ids=["synthetic", "org-root", "source-stem"],
+    )
+    def test_options_set_the_prefix(self, tmp_path, command, options, prefix):
+        nifti, _ = _converted_with_series_uid(tmp_path, SHORT_SERIES_UID)
+        args = _cli_uid_commands(tmp_path, nifti)[command]
+        result = CliRunner().invoke(main, [*args, *options])
+        assert result.exit_code == 0, result.output
+        assert "note:" not in result.output
+        for ds in _cli_written(command, tmp_path):
+            assert ds.SeriesInstanceUID.startswith(prefix)
+            assert ds.SOPInstanceUID.startswith(prefix)
+
+    @pytest.mark.parametrize("command", ["to-seg", "to-pmap", "to-mr"])
+    @pytest.mark.parametrize(
+        "options",
+        [["--uid-root", "1..2"], ["--uid-root", "1.5", "--uid-source"]],
+        ids=["invalid-root", "both"],
+    )
+    def test_bad_options_are_one_line_errors(self, tmp_path, command, options):
+        nifti, _ = _converted_with_series_uid(tmp_path, SHORT_SERIES_UID)
+        args = _cli_uid_commands(tmp_path, nifti)[command]
+        result = CliRunner().invoke(main, [*args, *options])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert result.output.startswith("Error: ")
+        assert "Traceback" not in result.output and "1..2" not in result.output
+        assert not (tmp_path / "cli").exists()
+
+    @pytest.mark.parametrize("command", ["to-seg", "to-pmap", "to-mr"])
+    def test_unusable_stem_prints_a_note(self, tmp_path, command):
+        nifti, _ = _converted_with_series_uid(tmp_path, LONG_SERIES_UID)
+        args = _cli_uid_commands(tmp_path, nifti)[command]
+        result = CliRunner().invoke(main, [*args, "--uid-source"])
+        assert result.exit_code == 0, result.output
+        assert result.output.splitlines()[-1] == (
+            "note: source UID stem not usable, synthetic 2.25 UIDs written"
+        )
+        assert LONG_SERIES_UID not in result.output
+        assert all(ds.SOPInstanceUID.startswith("2.25.") for ds in _cli_written(command, tmp_path))
+
+
 def test_damaged_tether_raises_from_every_single_series_function(tmp_path, converted):
     nifti, _ = converted
     labels, values = _derivatives(tmp_path, nifti)
