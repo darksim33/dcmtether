@@ -19,7 +19,8 @@ file formats).
   the source series UID up to its last dot, instead of the synthetic `2.25.<hash>` (still the
   default). The options cannot be combined; an unusable source stem falls back to `2.25.`
   (`uid_fallback` on the results, a note from `report.seg_lines` / `pmap_lines` / `mr_lines`).
-  The API adds `UidError`.
+  The API adds `UidError`. Desktop app: a "UIDs" choice (Synthetic / Org root / Source stem)
+  in the Derivatives tab.
 - Diffusion b-matrix in the sidecar: `DcmTether.PerVolume.DiffusionBMatrix` (Bxx, Bxy, Bxz, Byy,
   Byz, Bzz per volume) from the standard enhanced-MR elements `DiffusionBValueXX`–`ZZ` or
   Siemens' `(0019,xx27)`; also in merged sidecars.

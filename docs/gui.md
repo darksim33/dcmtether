@@ -31,7 +31,9 @@ files, compare two series, and write derivatives back as DICOM. Research use onl
 - **Derivatives** — a label map or map on the grid of a converted NIfTI → DICOM SEG,
   Parametric Map or derived MR images (`to-seg`, `to-pmap`, `to-mr`). The template is a dcmqi
   JSON file; examples are in [`docs/examples/`](examples/). SEG and Parametric Map write one
-  file, derived MR images a folder.
+  file, derived MR images a folder. "UIDs" chooses how the new UIDs start: synthetic `2.25.`
+  (default), an org root of your own organisation (`--uid-root`), or the source series UID's
+  stem (`--uid-source`); see [UIDs of derived objects](usage.md#uids-of-derived-objects).
 
 The progress bar under the tabs shows what the command is doing (a fixed label such as "Merging"
 and a count) and stays full when it has finished. The log shows what the CLI would print:
