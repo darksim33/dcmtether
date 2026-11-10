@@ -44,7 +44,12 @@ from dcmtether.progress import Progress, no_progress
 from dcmtether.scanning import DERIVATIVES_DIR, MERGED_DIR
 
 #: Sidecar keys that are always listed per volume (like in a converted diffusion series).
-_ALWAYS_PER_VOLUME = ("DiffusionBValue", "DiffusionGradientOrientation", "DiffusionGradientVendor")
+_ALWAYS_PER_VOLUME = (
+    "DiffusionBValue",
+    "DiffusionGradientOrientation",
+    "DiffusionGradientVendor",
+    "DiffusionBMatrix",
+)
 #: b-value tokens in a protocol name or description: "b50", "b_800", "B-1000", "b=0".
 _B_TOKEN = re.compile(r"(?<![a-z0-9])b[\s_=-]?\d+(?![0-9])", re.I)
 _AFFINE_ATOL = 1e-3

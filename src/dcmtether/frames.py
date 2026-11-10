@@ -15,8 +15,9 @@ SHARED_GROUPS = 0x52009229  # SharedFunctionalGroupsSequence
 PER_FRAME_GROUPS = 0x52009230  # PerFrameFunctionalGroupsSequence
 PIXEL_DATA = 0x7FE00010
 #: Sequences inside a functional group item whose contents are flattened too:
-#: DiffusionGradientDirectionSequence (holds DiffusionGradientOrientation).
-_NESTED = frozenset({0x00189076})
+#: DiffusionGradientDirectionSequence (holds DiffusionGradientOrientation) and
+#: DiffusionBMatrixSequence (holds DiffusionBValueXX … ZZ).
+_NESTED = frozenset({0x00189076, 0x00189601})
 
 
 def has_functional_groups(ds: Dataset) -> bool:

@@ -550,7 +550,8 @@ def _diffusion(volumes: list[pydicom.Dataset], per_volume: dict) -> str | None:
     they came from
     (``DcmTether.DiffusionSource``), or ``None`` if there are none or the standard elements
     were used. Gradients not in patient LPS (GE, Philips) are listed unconverted under
-    ``DiffusionGradientVendor`` instead of ``DiffusionGradientOrientation``.
+    ``DiffusionGradientVendor`` instead of ``DiffusionGradientOrientation``. A b-matrix (xx, xy,
+    xz, yy, yz, zz) is listed under ``DiffusionBMatrix`` if any volume has one.
     """
     values = [diffusion.diffusion_values(ds) for ds in volumes]
     sources = {v.source for v in values if v.source is not None}
@@ -562,6 +563,10 @@ def _diffusion(volumes: list[pydicom.Dataset], per_volume: dict) -> str | None:
     per_volume.pop("DiffusionGradientOrientation", None)
     per_volume["DiffusionBValue"] = [v.b_value for v in values]
     per_volume[gradient_key] = [None if v.gradient is None else list(v.gradient) for v in values]
+    if any(v.b_matrix is not None for v in values):
+        per_volume["DiffusionBMatrix"] = [
+            None if v.b_matrix is None else list(v.b_matrix) for v in values
+        ]
     standard = sources <= {diffusion.STANDARD}
     return None if standard else "; ".join(diffusion.SOURCE_TAGS[s] for s in sorted(sources))
 
@@ -728,7 +733,8 @@ volumes are listed in the sidecar under `DcmTether.PerVolume`. Diffusion b-value
 gradients come from the standard DICOM elements, else from vendor private tags (Siemens, GE,
 Philips; named in `DcmTether.DiffusionSource`). GE/Philips gradients are not in patient
 coordinates and are listed unconverted as `DiffusionGradientVendor`. They are always under
-`PerVolume`, also for a series with a single volume (e.g. one series per b-value).
+`PerVolume`, also for a series with a single volume (e.g. one series per b-value). A b-matrix
+(standard enhanced-MR elements or Siemens' private tag) is listed as `DiffusionBMatrix`.
 
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
