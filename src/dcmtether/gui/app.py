@@ -15,6 +15,7 @@ from dcmtether.errors import DcmtetherError
 from dcmtether.gui import theme
 from dcmtether.gui.worker import Done, Failed, Lines, Progress, Task, Worker
 from dcmtether.merge import parse_ids
+from dcmtether.uids import UidError, check_root
 
 POLL_MS = 100
 TITLE = "dcmtether"
@@ -40,6 +41,12 @@ DERIVATIVES = {
     "pmap": "Parametric Map",
     "mr": "Derived MR images (any PACS)",
 }
+#: How the new UIDs of a derivative start (the CLI's default, --uid-root, --uid-source).
+UID_MODES = {
+    "synthetic": "Synthetic (2.25.)",
+    "root": "Org root",
+    "source": "Source stem",
+}
 
 
 def _icons() -> list[tk.PhotoImage]:
@@ -58,6 +65,7 @@ class App:
         self.full_name = tk.BooleanVar(value=False)
         self.compare_after = tk.BooleanVar(value=True)
         self.derivative = tk.StringVar(value="seg")
+        self.uid_mode = tk.StringVar(value="synthetic")
         self.placement = tk.StringVar(value="merged")
         self.show_log = tk.BooleanVar(value=False)  # not stored: the app keeps no settings
         self.dark_mode = tk.BooleanVar(value=theme.current() == "dark")  # follows the system
@@ -237,8 +245,30 @@ class App:
         self._path_row(frame, 2, "source_nifti", "Source NIfTI", _NIFTI)
         self._path_row(frame, 3, "derivative", "Label map / map", _NIFTI)
         self._path_row(frame, 4, "template", "Template (JSON)", _JSON)
-        self._path_row(frame, 5, "derived_output", "Output", "output")
-        self._run_button(frame, 6, "Write DICOM", self.derive)
+        ttk.Label(frame, text="UIDs").grid(row=5, column=0, sticky="w", pady=2)
+        modes = ttk.Frame(frame)
+        modes.grid(row=5, column=1, sticky="w", padx=4)
+        for value, text in UID_MODES.items():
+            ttk.Radiobutton(
+                modes,
+                text=text,
+                value=value,
+                variable=self.uid_mode,
+                command=self._uid_mode_changed,
+            ).pack(side="left", padx=(0, 12))
+        ttk.Label(frame, text="UID root").grid(row=6, column=0, sticky="w", pady=2)
+        root = self.fields.setdefault("uid_root", tk.StringVar())
+        self.uid_root_entry = ttk.Entry(frame, textvariable=root, width=40)
+        self.uid_root_entry.grid(row=6, column=1, sticky="w", padx=4)
+        ttk.Label(
+            frame, text="Org root: only one your organisation owns.", style="Hint.TLabel"
+        ).grid(row=7, column=1, sticky="w", padx=4)
+        self._uid_mode_changed()
+        self._path_row(frame, 8, "derived_output", "Output", "output")
+        self._run_button(frame, 9, "Write DICOM", self.derive)
+
+    def _uid_mode_changed(self) -> None:
+        self.uid_root_entry.state(["!disabled"] if self.uid_mode.get() == "root" else ["disabled"])
 
     # --- commands --------------------------------------------------------------------------
 
@@ -329,17 +359,27 @@ class App:
         self._start("Compare", task)
 
     def derive(self) -> None:
-        if self._missing("source_nifti", "derivative", "template", "derived_output"):
+        mode = self.uid_mode.get()
+        keys = ("source_nifti", "derivative", "template", "derived_output")
+        if self._missing(*keys, *(("uid_root",) if mode == "root" else ())):
             return
+        uid_root = None
+        if mode == "root":
+            try:
+                uid_root = check_root(self.value("uid_root"))
+            except UidError as exc:  # value-free message, like the CLI
+                self._show_error(str(exc))
+                return
         kind = self.derivative.get()
-        args = [self.value(k) for k in ("source_nifti", "derivative", "template", "derived_output")]
+        args = [self.value(k) for k in keys]
+        options = {"uid_root": uid_root, "uid_source": mode == "source"}
 
         def task(progress, show) -> tuple[list[str], bool]:
             if kind == "seg":
-                return report.seg_lines(api.to_seg(*args)), True
+                return report.seg_lines(api.to_seg(*args, **options)), True
             if kind == "pmap":
-                return report.pmap_lines(api.to_pmap(*args)), True
-            return report.mr_lines(api.to_mr(*args)), True
+                return report.pmap_lines(api.to_pmap(*args, **options)), True
+            return report.mr_lines(api.to_mr(*args, **options)), True
 
         self._start(DERIVATIVES[kind], task)
 
