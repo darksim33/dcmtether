@@ -31,6 +31,7 @@ from dcmtether.derived import (
     uids_for,
     write,
 )
+from dcmtether.uids import uid_prefix
 
 _ALGORITHM_TYPES = {v.name for v in hd.seg.SegmentAlgorithmTypeValues}
 
@@ -190,6 +191,8 @@ class SegResult:
     #: labelID in the label map -> segment number in the SEG (1..n).
     segment_numbers: dict[int, int]
     n_sources: int
+    #: ``uid_source`` was asked for, but the source UID stem was not usable: synthetic UIDs.
+    uid_fallback: bool = False
 
 
 def _label_values(labels_path: Path, source: Source, metadata: SegMetadata) -> np.ndarray:
@@ -212,11 +215,21 @@ def _label_values(labels_path: Path, source: Source, metadata: SegMetadata) -> n
 
 
 def to_seg(
-    source_nifti: Path, labels_nifti: Path, metadata: SegMetadata, output: Path
+    source_nifti: Path,
+    labels_nifti: Path,
+    metadata: SegMetadata,
+    output: Path,
+    *,
+    uid_root: str | None = None,
+    uid_source: bool = False,
 ) -> SegResult:
-    """Write a DICOM SEG for the label map ``labels_nifti`` on the grid of ``source_nifti``."""
+    """Write a DICOM SEG for the label map ``labels_nifti`` on the grid of ``source_nifti``.
+
+    ``uid_root`` / ``uid_source`` choose the prefix of the new UIDs (``uids.uid_prefix``).
+    """
     check_output(output)
     source = load_source(source_nifti)
+    root, uid_fallback = uid_prefix(source.series_instance_uid, uid_root, uid_source)
     labels = _label_values(labels_nifti, source, metadata)
 
     numbering = {s.label_id: n for n, s in enumerate(metadata.segments, start=1)}
@@ -225,7 +238,7 @@ def to_seg(
         lut[label_id] = number
     dtype = np.uint8 if len(numbering) < 256 else np.uint16
     pixel_array = source.frames(lut[labels]).astype(dtype)
-    series_uid, sop_uid = uids_for(source, "seg", [metadata.canonical], pixel_array)
+    series_uid, sop_uid = uids_for(source, "seg", [metadata.canonical], pixel_array, root)
 
     with quiet_pydicom():
         segmentation = hd.seg.Segmentation(
@@ -248,4 +261,4 @@ def to_seg(
         )
         segmentation.SeriesDescription = series_description(metadata.series_description)
     write(segmentation, output)
-    return SegResult(output, numbering, len(source.images))
+    return SegResult(output, numbering, len(source.images), uid_fallback)

@@ -150,6 +150,23 @@ files are not needed. Derived objects get deterministic UIDs (same input → sam
 change → new UIDs), reference their source images, and are labelled "RESEARCH USE ONLY".
 Only 3D sources are supported so far.
 
+### UIDs of derived objects
+
+The new Series and SOP Instance UIDs end in a hash of the content, so reruns give the same
+UIDs and changed content gives new ones. `to-seg`, `to-pmap` and `to-mr` choose how they
+start:
+
+| Option | New UIDs |
+|---|---|
+| none (default) | `2.25.<hash>` (synthetic, no organisation root needed) |
+| `--uid-root ROOT` | `<ROOT>.<hash digits>`; use only a root your organisation owns (at most 39 characters) |
+| `--uid-source` | the source series UID up to its last dot, then `<hash digits>` |
+
+The two options cannot be combined. `--uid-source` uses another organisation's root and is
+not strictly DICOM-conformant. If the source stem is malformed or longer than 39 characters,
+synthetic `2.25.` UIDs are written and a note says so. The Study and Frame of Reference UIDs
+are kept in all modes.
+
 Metadata uses the [dcmqi](https://qiicr.org/dcmqi/) JSON templates; examples:
 [`seg-template.json`](examples/seg-template.json),
 [`seg-template-abdomen.json`](examples/seg-template-abdomen.json), [`pmap-template.json`](examples/pmap-template.json).

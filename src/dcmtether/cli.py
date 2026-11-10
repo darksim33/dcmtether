@@ -217,12 +217,35 @@ def compare(original: Path, rebuilt: Path) -> None:
 # --- derivatives -------------------------------------------------------------------------------
 
 
+def _uid_options(command):
+    """``--uid-root`` / ``--uid-source`` for the commands that write derivatives."""
+    command = click.option(
+        "--uid-source",
+        is_flag=True,
+        help="Use the source series UID up to its last dot as UID root (another organisation's "
+        "root; not strictly DICOM-conformant).",
+    )(command)
+    return click.option(
+        "--uid-root",
+        metavar="ROOT",
+        help="Organisation UID root for the new UIDs (default: synthetic 2.25.<hash>).",
+    )(command)
+
+
 @main.command("to-seg")
 @click.argument("nifti", type=_existing_file)
 @click.argument("labels", type=_existing_file)
 @click.argument("metadata", type=_existing_file)
 @click.argument("output", type=click.Path(dir_okay=False, path_type=Path))
-def to_seg_command(nifti: Path, labels: Path, metadata: Path, output: Path) -> None:
+@_uid_options
+def to_seg_command(
+    nifti: Path,
+    labels: Path,
+    metadata: Path,
+    output: Path,
+    uid_root: str | None,
+    uid_source: bool,
+) -> None:
     """Write a DICOM SEG for the label map LABELS on the grid of NIFTI.
 
     NIFTI is a converted source (with its *.tether.json); LABELS must have the same shape and
@@ -230,7 +253,9 @@ def to_seg_command(nifti: Path, labels: Path, metadata: Path, output: Path) -> N
     Research use only.
     """
     with _errors():
-        result = api.to_seg(nifti, labels, metadata, output)
+        result = api.to_seg(
+            nifti, labels, metadata, output, uid_root=uid_root, uid_source=uid_source
+        )
     _echo(report.seg_lines(result))
 
 
@@ -239,7 +264,15 @@ def to_seg_command(nifti: Path, labels: Path, metadata: Path, output: Path) -> N
 @click.argument("map_nifti", metavar="MAP", type=_existing_file)
 @click.argument("metadata", type=_existing_file)
 @click.argument("output", type=click.Path(dir_okay=False, path_type=Path))
-def to_pmap_command(nifti: Path, map_nifti: Path, metadata: Path, output: Path) -> None:
+@_uid_options
+def to_pmap_command(
+    nifti: Path,
+    map_nifti: Path,
+    metadata: Path,
+    output: Path,
+    uid_root: str | None,
+    uid_source: bool,
+) -> None:
     """Write a DICOM Parametric Map for MAP (e.g. ADC, QSM) on the grid of NIFTI.
 
     NIFTI is a converted source (with its *.tether.json); MAP must have the same shape and
@@ -247,7 +280,9 @@ def to_pmap_command(nifti: Path, map_nifti: Path, metadata: Path, output: Path) 
     Writes OUTPUT (a new file). Research use only.
     """
     with _errors():
-        result = api.to_pmap(nifti, map_nifti, metadata, output)
+        result = api.to_pmap(
+            nifti, map_nifti, metadata, output, uid_root=uid_root, uid_source=uid_source
+        )
     _echo(report.pmap_lines(result))
 
 
@@ -256,7 +291,15 @@ def to_pmap_command(nifti: Path, map_nifti: Path, metadata: Path, output: Path) 
 @click.argument("derivative", type=_existing_file)
 @click.argument("metadata", type=_existing_file)
 @click.argument("output", type=_output_dir)
-def to_mr_command(nifti: Path, derivative: Path, metadata: Path, output: Path) -> None:
+@_uid_options
+def to_mr_command(
+    nifti: Path,
+    derivative: Path,
+    metadata: Path,
+    output: Path,
+    uid_root: str | None,
+    uid_source: bool,
+) -> None:
     """Write DERIVATIVE as derived MR images (one per source slice) into OUTPUT.
 
     Fallback for PACS without SEG/Parametric Map support. DERIVATIVE lies on the grid of
@@ -264,5 +307,7 @@ def to_mr_command(nifti: Path, derivative: Path, metadata: Path, output: Path) -
     map template (map: float maps are quantized to 16 bits). Research use only.
     """
     with _errors():
-        result = api.to_mr(nifti, derivative, metadata, output)
+        result = api.to_mr(
+            nifti, derivative, metadata, output, uid_root=uid_root, uid_source=uid_source
+        )
     _echo(report.mr_lines(result))

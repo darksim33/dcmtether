@@ -14,6 +14,12 @@ file formats).
 - `merge.parse_ids` and `report.merge_lines` / `report.merge_ok`: the id parsing and the result
   lines of `merge`, shared by the CLI and the GUI. `scan_lines` and `update_lines` take
   `body_part`.
+- `--uid-root ROOT` and `--uid-source` for `to-seg`, `to-pmap` and `to-mr` (API: `uid_root=`,
+  `uid_source=`): new Series and SOP Instance UIDs as `<ROOT>.<hash digits>` or starting with
+  the source series UID up to its last dot, instead of the synthetic `2.25.<hash>` (still the
+  default). The options cannot be combined; an unusable source stem falls back to `2.25.`
+  (`uid_fallback` on the results, a note from `report.seg_lines` / `pmap_lines` / `mr_lines`).
+  The API adds `UidError`.
 - Diffusion b-matrix in the sidecar: `DcmTether.PerVolume.DiffusionBMatrix` (Bxx, Bxy, Bxz, Byy,
   Byz, Bzz per volume) from the standard enhanced-MR elements `DiffusionBValueXX`–`ZZ` or
   Siemens' `(0019,xx27)`; also in merged sidecars.

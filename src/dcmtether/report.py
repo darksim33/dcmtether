@@ -101,6 +101,13 @@ def compare_lines(report: Report) -> list[str]:
     return lines
 
 
+UID_FALLBACK = "note: source UID stem not usable, synthetic 2.25 UIDs written"
+
+
+def _uid_note(uid_fallback: bool) -> list[str]:
+    return [UID_FALLBACK] if uid_fallback else []
+
+
 def seg_lines(result: SegResult) -> list[str]:
     lines = [
         f"Wrote DICOM SEG with {plural(len(result.segment_numbers), 'segment')} on "
@@ -110,13 +117,14 @@ def seg_lines(result: SegResult) -> list[str]:
     if renumbered:
         pairs = ", ".join(f"{k}->{v}" for k, v in sorted(renumbered.items()))
         lines.append(f"Label values renumbered to segment numbers: {pairs}.")
-    return lines
+    return lines + _uid_note(result.uid_fallback)
 
 
 def pmap_lines(result: PmapResult) -> list[str]:
     return [
         f"Wrote DICOM Parametric Map ({result.dtype}) on "
-        f"{plural(result.n_sources, 'source image')}."
+        f"{plural(result.n_sources, 'source image')}.",
+        *_uid_note(result.uid_fallback),
     ]
 
 
@@ -125,7 +133,7 @@ def mr_lines(result: DerivedMRResult) -> list[str]:
     if result.max_error > 0:
         cause = "Rescale rounded to DS precision" if result.rounded else "Quantized to 16 bits"
         lines.append(f"{cause}: max error {result.max_error:.3g} (to-pmap is exact).")
-    return lines
+    return lines + _uid_note(result.uid_fallback)
 
 
 def merge_lines(result: MergeResult) -> list[str]:
