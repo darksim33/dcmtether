@@ -322,9 +322,9 @@ The public copy of this list is `docs/roadmap.md` (no phases, dates or internal 
   exported), DICOM PS3.15 Annex E Basic Profile (+ chosen options) applied to `*.tether.json`,
   sidecars and derivatives, consistent UID remapping (`2.25.` UIDs) and date shifting per
   subject, no manifest/source paths. UIDs made with `--uid-source` carry the source's root, so
-  they must be remapped too (also those that are not `2.25.`). The original dataset stays untouched; an anonymized export
-  is by definition no longer element-identical to the source DICOM. Related: open question on
-  anonymized *inputs* (§7).
+  they must be remapped too (also those that are not `2.25.`). The original dataset stays
+  untouched; an anonymized export is by definition no longer element-identical to the source
+  DICOM. Related: open question on anonymized *inputs* (§7).
 - **More datatype folders and suffixes** (added 2026-10-09). Today there are only `anat/` and
   `dwi/` (`forward.py`: `DATATYPE_DIR`, `DWI_DIR`); everything that isn't diffusion lands in
   `anat/` labelled `T1w`/`T2w`/`PDw`/`FLAIR` by keyword or TR/TE, else `MR`. Candidates, following
