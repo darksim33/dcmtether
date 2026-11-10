@@ -43,7 +43,8 @@ uv run ruff format --check . && uv run ruff check . && uv run pytest
 ```
 
 Portable Windows app: `powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1`
-(writes `dist/dcmtether-gui-<version>-win64.zip`).
+(writes `dist/dcmtether-gui-<version>-win64.zip`). Setup, build steps and troubleshooting:
+[`docs/dev/Install.md`](docs/dev/Install.md).
 
 The first test run downloads public test data and the DICOM standard into `.cache/`. Test data
 coverage: `docs/dev/test-data.md`.
