@@ -7,6 +7,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import pydicom
 import pytest
 from roundtrip import output_rows
 from synthetic import SeriesSpec, make_series, write_series
@@ -14,9 +15,11 @@ from test_merge import _b_series
 from test_pmap import META as PMAP_META
 from test_seg import META as SEG_META
 
+from dcmtether import api, report
 from dcmtether.errors import DcmtetherError
 from dcmtether.gui import self_test
 from dcmtether.gui.worker import Done, Failed, Lines, Progress, Worker, safe_message
+from dcmtether.seg import SegResult
 
 
 def _messages(worker: Worker, timeout: float = 60) -> list:
@@ -211,10 +214,83 @@ def test_derivatives(app, tmp_path, kind, meta, expected):
     app.fields["template"].set(str(tmp_path / "template.json"))
     output = tmp_path / ("out" if kind == "mr" else "out.dcm")
     app.fields["derived_output"].set(str(output))
+    app.uid_mode.set("root")
+    app.fields["uid_root"].set("1.2.3")
     text = _press(app, app.derive)
     assert expected in text, text
     assert output.exists()
     _no_secrets(text, tmp_path)
+    written = sorted(output.iterdir()) if kind == "mr" else [output]
+    for path in written:  # assert only, never print the UIDs
+        ds = pydicom.dcmread(path, stop_before_pixels=True)
+        assert ds.SeriesInstanceUID.startswith("1.2.3.") and len(ds.SOPInstanceUID) <= 64
+        assert ds.SOPInstanceUID.startswith("1.2.3.")
+
+
+class _Calls(list):
+    fallback: bool
+
+
+@pytest.fixture
+def fake_seg(app, monkeypatch):
+    """``api.to_seg`` replaced: records its keywords, returns ``fake_seg.fallback``."""
+    calls = _Calls()
+
+    def to_seg(*args, **options):
+        calls.append(options)
+        return SegResult(Path(args[3]), {1: 1}, 5, calls.fallback)
+
+    calls.fallback = False
+    monkeypatch.setattr(api, "to_seg", to_seg)
+    app.derivative.set("seg")
+    for key in ("source_nifti", "derivative", "template", "derived_output"):
+        app.fields[key].set(key)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("mode", "root", "expected"),
+    [
+        ("synthetic", "", {"uid_root": None, "uid_source": False}),
+        ("root", " 1.2.3 ", {"uid_root": "1.2.3", "uid_source": False}),
+        ("source", "1.2.3", {"uid_root": None, "uid_source": True}),  # root ignored
+    ],
+)
+def test_derivative_uid_modes_are_passed_through(app, fake_seg, mode, root, expected):
+    app.uid_mode.set(mode)
+    app.fields["uid_root"].set(root)
+    _press(app, app.derive)
+    assert fake_seg == [expected]
+    assert app.status.get() == "Done."
+
+
+def test_uid_root_entry_is_only_enabled_for_org_root(app):
+    for mode, enabled in (("synthetic", False), ("root", True), ("source", False)):
+        app.uid_mode.set(mode)
+        app._uid_mode_changed()
+        assert app.uid_root_entry.instate(["!disabled"]) is enabled
+
+
+@pytest.mark.parametrize(
+    ("root", "error"),
+    [
+        ("", "Please fill in every field."),
+        ("1..2", "UID root must be digits separated by dots, without leading zeros"),
+        ("1." * 25 + "1", "UID root is longer than 39 characters"),
+    ],
+)
+def test_bad_org_root_is_refused_before_running(app, fake_seg, root, error):
+    app.uid_mode.set("root")
+    app.fields["uid_root"].set(root)
+    app.derive()
+    assert app.errors == [error]
+    assert fake_seg == [] and not app.worker.busy
+
+
+def test_uid_fallback_note_is_shown(app, fake_seg):
+    fake_seg.fallback = True
+    app.uid_mode.set("source")
+    assert report.UID_FALLBACK in _press(app, app.derive)
 
 
 def test_progress_block_shows_counts_and_stays_full_after_a_run(app, tmp_path):
