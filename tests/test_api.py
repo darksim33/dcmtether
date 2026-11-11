@@ -298,9 +298,12 @@ def test_bad_template_raises_a_derived_error(tmp_path, converted):
 
 # --- derived UIDs ------------------------------------------------------------------------------
 
-#: Synthetic source series UIDs: a short one (stem "1.2.3.4") and one whose stem is too long.
+#: Synthetic source series UIDs: a short one (stem "1.2.3.4"), one of 63 characters whose stem
+#: (57) is shortened at a dot to 39, and one without a dot, which has no stem.
 SHORT_SERIES_UID = "1.2.3.4.5"
-LONG_SERIES_UID = "1." + "9" * 38 + ".5"
+LONG_SERIES_UID = ".".join(["1", "2"] + ["12345"] * 10)
+LONG_STEM = ".".join(["1", "2"] + ["12345"] * 6)
+NO_STEM_SERIES_UID = "12345"
 
 
 def _converted_with_series_uid(tmp_path: Path, series_uid: str | None) -> tuple[Path, list]:
@@ -341,8 +344,9 @@ class TestDerivedUids:
             (None, {}, "2.25."),
             (None, {"uid_root": "1.5"}, "1.5."),
             (SHORT_SERIES_UID, {"uid_source": True}, "1.2.3.4."),
+            (LONG_SERIES_UID, {"uid_source": True}, LONG_STEM + "."),
         ],
-        ids=["synthetic", "org-root", "source-stem"],
+        ids=["synthetic", "org-root", "source-stem", "long-source-stem"],
     )
     def test_prefix_and_identity(self, tmp_path, series_uid, options, prefix):
         """Every new UID has the mode's prefix; Study and Frame of Reference are kept."""
@@ -388,8 +392,8 @@ class TestDerivedUids:
                 ), kind
 
     def test_unusable_stem_falls_back(self, tmp_path):
-        """A source stem that is too long gives synthetic UIDs and says so."""
-        nifti, _ = _converted_with_series_uid(tmp_path, LONG_SERIES_UID)
+        """A source UID without a usable stem gives synthetic UIDs and says so."""
+        nifti, _ = _converted_with_series_uid(tmp_path, NO_STEM_SERIES_UID)
         out = _write_all(tmp_path, nifti, "out", uid_source=True)
         for kind, datasets in out["written"].items():
             assert out["results"][kind].uid_fallback, kind
@@ -475,14 +479,14 @@ class TestDerivedUidsCli:
 
     @pytest.mark.parametrize("command", ["to-seg", "to-pmap", "to-mr"])
     def test_unusable_stem_prints_a_note(self, tmp_path, command):
-        nifti, _ = _converted_with_series_uid(tmp_path, LONG_SERIES_UID)
+        nifti, _ = _converted_with_series_uid(tmp_path, NO_STEM_SERIES_UID)
         args = _cli_uid_commands(tmp_path, nifti)[command]
         result = CliRunner().invoke(main, [*args, "--uid-source"])
         assert result.exit_code == 0, result.output
         assert result.output.splitlines()[-1] == (
             "note: source UID stem not usable, synthetic 2.25 UIDs written"
         )
-        assert LONG_SERIES_UID not in result.output
+        assert NO_STEM_SERIES_UID not in result.output
         assert all(ds.SOPInstanceUID.startswith("2.25.") for ds in _cli_written(command, tmp_path))
 
 

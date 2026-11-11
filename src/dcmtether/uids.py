@@ -10,9 +10,10 @@ The prefix is chosen per call (``uid_prefix``):
 
 - **synthetic** (default): ``2.25.<uuid as integer>``, needs no organisation root;
 - **org root**: a root the user's organisation owns, used as given;
-- **source stem**: the source series UID up to its last dot. That root belongs to whoever
-  issued the source UID, so this mode is not strictly DICOM-conformant; a stem that is not
-  usable falls back to synthetic UIDs.
+- **source stem**: the source series UID up to its last dot, shortened at a dot to at most
+  ``MAX_ROOT`` characters (scanner series UIDs are often 50-64 characters long). That root
+  belongs to whoever issued the source UID, so this mode is not strictly DICOM-conformant; a
+  malformed source UID falls back to synthetic UIDs.
 
 A prefix is at most ``MAX_ROOT`` characters, so at least ``MIN_DIGITS`` digits (about 80 bits)
 remain within the 64-character UID limit.
@@ -55,9 +56,15 @@ def check_root(root: str) -> str:
 
 
 def stem(uid: str) -> str | None:
-    """``uid`` up to its last dot, if that can prefix derived UIDs; else ``None``."""
-    head, dot, _ = uid.strip().rpartition(".")
-    return head if dot and _is_root(head) else None
+    """``uid`` without its last component, shortened at a dot to at most ``MAX_ROOT``
+    characters; ``None`` if ``uid`` is malformed or nothing is left."""
+    uid = uid.strip()
+    if _ROOT.fullmatch(uid) is None:
+        return None
+    parts = uid.split(".")[:-1]
+    while parts and len(".".join(parts)) > MAX_ROOT:
+        parts.pop()
+    return ".".join(parts) or None
 
 
 def uid_prefix(
