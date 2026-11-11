@@ -375,11 +375,15 @@ class App:
         options = {"uid_root": uid_root, "uid_source": mode == "source"}
 
         def task(progress, show) -> tuple[list[str], bool]:
+            # A source-stem fallback counts as a problem, so the log with its note opens.
             if kind == "seg":
-                return report.seg_lines(api.to_seg(*args, **options)), True
+                result = api.to_seg(*args, **options)
+                return report.seg_lines(result), not result.uid_fallback
             if kind == "pmap":
-                return report.pmap_lines(api.to_pmap(*args, **options)), True
-            return report.mr_lines(api.to_mr(*args, **options)), True
+                result = api.to_pmap(*args, **options)
+                return report.pmap_lines(result), not result.uid_fallback
+            result = api.to_mr(*args, **options)
+            return report.mr_lines(result), not result.uid_fallback
 
         self._start(DERIVATIVES[kind], task)
 
