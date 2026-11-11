@@ -6,8 +6,8 @@ $version = (uv run python -c "import dcmtether; print(dcmtether.__version__)").T
 $app = "dist/dcmtether-gui"
 $zip = "dist/dcmtether-gui-$version-win64.zip"
 
-uv sync --no-dev
-uv run --no-dev --with pyinstaller pyinstaller --noconfirm --clean packaging/dcmtether-gui.spec
+uv sync --no-dev --extra gui
+uv run --no-dev --extra gui --with pyinstaller pyinstaller --noconfirm --clean packaging/dcmtether-gui.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 # The app has no console: the self-test writes its result next to the exe.
