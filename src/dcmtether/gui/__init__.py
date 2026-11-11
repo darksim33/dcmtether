@@ -66,13 +66,35 @@ def _report_self_test() -> int:
     return 1 if problems else 0
 
 
+#: Shown when the optional ``gui`` extra (sv-ttk, darkdetect) is not installed.
+MISSING_EXTRA = 'The desktop app needs the GUI extra: uv tool install "dcmtether[gui]"'
+
+
+def _missing_extra() -> None:
+    """Tell the user how to install the extra (a dialog: the gui-script has no console)."""
+    if sys.stderr is not None:
+        print(MISSING_EXTRA, file=sys.stderr)
+    try:
+        from tkinter import messagebox
+
+        messagebox.showerror("dcmtether", MISSING_EXTRA)
+    except Exception:  # no display or no Tk: the stderr line is all we can do
+        pass
+    sys.exit(1)
+
+
 def main() -> None:
     if "--self-test" in sys.argv[1:]:
         sys.exit(_report_self_test())
     import tkinter as tk
 
-    from dcmtether.gui import theme
-    from dcmtether.gui.app import App
+    try:
+        from dcmtether.gui import theme
+        from dcmtether.gui.app import App
+    except ImportError as exc:
+        if exc.name not in ("sv_ttk", "darkdetect"):
+            raise
+        _missing_extra()
 
     _dpi_aware()
     root = tk.Tk()
