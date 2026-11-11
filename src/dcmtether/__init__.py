@@ -36,6 +36,7 @@ from dcmtether.reverse import ReverseError
 from dcmtether.scanning import Status
 from dcmtether.seg import SegResult
 from dcmtether.tether import TetherError
+from dcmtether.uids import UidError
 
 __all__ = [
     "ConversionError",
@@ -59,6 +60,7 @@ __all__ = [
     "SeriesInfo",
     "Status",
     "TetherError",
+    "UidError",
     "__version__",
     "compare",
     "merge_series",

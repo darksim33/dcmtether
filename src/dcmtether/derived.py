@@ -164,18 +164,32 @@ def load_on_grid(path: Path, source: Source, what: str) -> nib.Nifti1Image:
     return img
 
 
-def uids_for(source: Source, derivation: str, parts: Iterable[str], array: np.ndarray):
-    """(series UID, SOP instance UID): the same inputs give the same UIDs, other content new."""
+def content_digest(source: Source, derivation: str, parts: Iterable[str], array: np.ndarray) -> str:
+    """SHA-256 (hex) of the source series, the derivation, ``parts`` and the derived pixels."""
     content = hashlib.sha256()
     for part in (source.series_instance_uid, derivation, str(array.shape), str(array.dtype)):
         content.update(part.encode("utf-8") + b"\0")
     for part in parts:
         content.update(part.encode("utf-8") + b"\0")
     content.update(np.ascontiguousarray(array).tobytes())
-    digest = content.hexdigest()
+    return content.hexdigest()
+
+
+def uids_for(
+    source: Source,
+    derivation: str,
+    parts: Iterable[str],
+    array: np.ndarray,
+    root: str | None = None,
+) -> tuple[str, str]:
+    """(series UID, SOP instance UID): the same inputs give the same UIDs, other content new.
+
+    ``root`` is the prefix from ``uids.uid_prefix`` (``None``: synthetic ``2.25.``).
+    """
+    digest = content_digest(source, derivation, parts, array)
     return (
-        uids.derived_uid(source.series_instance_uid, derivation, digest, "series"),
-        uids.derived_uid(source.series_instance_uid, derivation, digest, "instance"),
+        uids.derived_uid(source.series_instance_uid, derivation, digest, "series", root),
+        uids.derived_uid(source.series_instance_uid, derivation, digest, "instance", root),
     )
 
 

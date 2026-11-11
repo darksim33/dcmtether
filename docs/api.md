@@ -114,22 +114,35 @@ Compare two DICOM series (folders) element by element, paired by SOPInstanceUID.
 `metadata` is a dcmqi template: a path to the JSON file or the loaded `dict`
 ([examples](examples/)). The derivative must lie on the grid of `nifti`, a converted source.
 
-### `to_seg(nifti, labels, metadata, output, *, log=True)` → `SegResult`
+New Series and SOP Instance UIDs end in digits hashed from the source and the derived content
+(same input → same UIDs). The keywords `uid_root` and `uid_source` choose how they start:
+
+| Keywords | New UIDs start with |
+|---|---|
+| neither (default) | `2.25.` (synthetic, no organisation root needed) |
+| `uid_root="1.2.3"` | the given root; use only one your organisation owns (at most 39 characters) |
+| `uid_source=True` | the source series UID up to its last dot (another organisation's root) |
+
+`uid_root` and `uid_source` cannot be combined. If the source stem is not usable (malformed or
+longer than 39 characters), synthetic UIDs are written and the result's `uid_fallback` is true.
+
+### `to_seg(nifti, labels, metadata, output, *, uid_root=None, uid_source=False, log=True)` → `SegResult`
 
 Write the label map `labels` as a DICOM SEG file `output`. `SegResult`: `path`,
-`segment_numbers` (label value → segment number) and `n_sources`.
+`segment_numbers` (label value → segment number), `n_sources` and `uid_fallback`.
 
-### `to_pmap(nifti, map, metadata, output, *, log=True)` → `PmapResult`
+### `to_pmap(nifti, map, metadata, output, *, uid_root=None, uid_source=False, log=True)` → `PmapResult`
 
 Write `map` (e.g. ADC, QSM) as a DICOM Parametric Map file `output`. `PmapResult`: `path`,
-`dtype` and `n_sources`.
+`dtype`, `n_sources` and `uid_fallback`.
 
-### `to_mr(nifti, derivative, metadata, output, *, log=True)` → `DerivedMRResult`
+### `to_mr(nifti, derivative, metadata, output, *, uid_root=None, uid_source=False, log=True)` → `DerivedMRResult`
 
 Write a label map (SEG template) or map (parametric map template) as classic derived MR
 images into the folder `output`, for PACS without SEG / Parametric Map support.
-`DerivedMRResult`: `paths`, `kind` (`"labels"` or `"map"`), `max_error` and `rounded`
-(the error comes only from rounding the rescale values, not from quantizing a float map).
+`DerivedMRResult`: `paths`, `kind` (`"labels"` or `"map"`), `max_error`, `rounded`
+(the error comes only from rounding the rescale values, not from quantizing a float map) and
+`uid_fallback`.
 
 ```python
 template = {"SeriesNumber": "900", "QuantityValueCode": {...}, "MeasurementUnitsCode": {...}}
@@ -147,6 +160,7 @@ dt.to_pmap(nifti, "adc.nii.gz", template, "adc.dcm")
 | `MergeError` | `merge_series`: named series that are not converted, split, or not on one grid |
 | `TetherError` | a `*.tether.json` is unreadable, foreign, too old or damaged |
 | `DerivedError` | `to_seg`, `to_pmap`, `to_mr`: bad template, derivative off the grid, unsupported source, output exists |
+| `UidError` | `to_seg`, `to_pmap`, `to_mr`: malformed or too long `uid_root`, or `uid_root` together with `uid_source` (raised before any file is read) |
 
 A path that does not exist raises `FileNotFoundError` (`NotADirectoryError` for a file where a
 folder is needed). `__version__` holds the installed version.

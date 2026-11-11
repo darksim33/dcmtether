@@ -5,6 +5,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import pydicom
 import pytest
 from click.testing import CliRunner
 from roundtrip import output_rows
@@ -38,6 +39,7 @@ API = {
     "SeriesInfo",
     "Status",
     "TetherError",
+    "UidError",
     "__version__",
     "compare",
     "merge_series",
@@ -292,6 +294,196 @@ def test_bad_template_raises_a_derived_error(tmp_path, converted):
         dt.to_seg(nifti, labels, {"segmentAttributes": []}, tmp_path / "seg.dcm")
     with pytest.raises(dt.DerivedError, match="dcmqi"):
         dt.to_mr(nifti, labels, {}, tmp_path / "mr")
+
+
+# --- derived UIDs ------------------------------------------------------------------------------
+
+#: Synthetic source series UIDs: a short one (stem "1.2.3.4") and one whose stem is too long.
+SHORT_SERIES_UID = "1.2.3.4.5"
+LONG_SERIES_UID = "1." + "9" * 38 + ".5"
+
+
+def _converted_with_series_uid(tmp_path: Path, series_uid: str | None) -> tuple[Path, list]:
+    """(source NIfTI, source datasets) for one synthetic series, optionally with another UID."""
+    series = _series(1)
+    if series_uid is not None:
+        for ds in series.datasets:
+            ds.SeriesInstanceUID = series_uid
+    write_series(series, tmp_path / "src" / "a")
+    dt.run(tmp_path / "src", tmp_path / "dataset")
+    nifti = tmp_path / "dataset" / output_rows(tmp_path / "dataset")[0]["nifti_path"]
+    return nifti, series.datasets
+
+
+def _write_all(tmp_path: Path, nifti: Path, out: str, **uid_options) -> dict:
+    """Write SEG, Parametric Map and derived MR; their results and written datasets."""
+    labels, values = _derivatives(tmp_path, nifti)
+    base = tmp_path / out
+    results = {
+        "seg": dt.to_seg(nifti, labels, SEG_META, base / "seg.dcm", **uid_options),
+        "pmap": dt.to_pmap(nifti, values, PMAP_META, base / "pm.dcm", **uid_options),
+        "mr": dt.to_mr(nifti, values, PMAP_META, base / "mr", **uid_options),
+    }
+    written = {
+        "seg": [pydicom.dcmread(results["seg"].path)],
+        "pmap": [pydicom.dcmread(results["pmap"].path)],
+        "mr": [pydicom.dcmread(p) for p in results["mr"].paths],
+    }
+    return {"results": results, "written": written}
+
+
+class TestDerivedUids:
+    """New Series/SOP UIDs of SEG, Parametric Map and derived MR in all three modes."""
+
+    @pytest.mark.parametrize(
+        ("series_uid", "options", "prefix"),
+        [
+            (None, {}, "2.25."),
+            (None, {"uid_root": "1.5"}, "1.5."),
+            (SHORT_SERIES_UID, {"uid_source": True}, "1.2.3.4."),
+        ],
+        ids=["synthetic", "org-root", "source-stem"],
+    )
+    def test_prefix_and_identity(self, tmp_path, series_uid, options, prefix):
+        """Every new UID has the mode's prefix; Study and Frame of Reference are kept."""
+        nifti, sources = _converted_with_series_uid(tmp_path, series_uid)
+        out = _write_all(tmp_path, nifti, "out", **options)
+        source_sops = {ds.SOPInstanceUID for ds in sources}
+        for kind, datasets in out["written"].items():
+            assert not out["results"][kind].uid_fallback
+            assert len({ds.SeriesInstanceUID for ds in datasets}) == 1, f"{kind}: one series"
+            for ds in datasets:
+                for uid in (ds.SeriesInstanceUID, ds.SOPInstanceUID):
+                    assert uid.startswith(prefix) and len(uid) <= 64, kind
+                assert ds.SeriesInstanceUID != sources[0].SeriesInstanceUID, kind
+                assert ds.SOPInstanceUID not in source_sops, kind
+                assert ds.StudyInstanceUID == sources[0].StudyInstanceUID, kind
+                assert ds.FrameOfReferenceUID == sources[0].FrameOfReferenceUID, kind
+            assert len({ds.SOPInstanceUID for ds in datasets}) == len(datasets), kind
+
+    @pytest.mark.parametrize(
+        "options",
+        [{}, {"uid_root": "1.5"}, {"uid_source": True}],
+        ids=["synthetic", "root", "stem"],
+    )
+    def test_rerun_gives_same_uids(self, tmp_path, options):
+        """Writing the same derivatives again gives the same UIDs."""
+        nifti, _ = _converted_with_series_uid(tmp_path, SHORT_SERIES_UID)
+        first = _write_all(tmp_path, nifti, "first", **options)["written"]
+        second = _write_all(tmp_path, nifti, "second", **options)["written"]
+        for kind in first:
+            assert [(d.SeriesInstanceUID, d.SOPInstanceUID) for d in first[kind]] == [
+                (d.SeriesInstanceUID, d.SOPInstanceUID) for d in second[kind]
+            ], kind
+
+    def test_org_root_keeps_hash_digits(self, tmp_path):
+        """An org root changes only the prefix; the digits match the synthetic UIDs."""
+        nifti, _ = _converted_with_series_uid(tmp_path, None)
+        synthetic = _write_all(tmp_path, nifti, "synthetic")["written"]
+        rooted = _write_all(tmp_path, nifti, "rooted", uid_root="1.5")["written"]
+        for kind in synthetic:
+            for plain, with_root in zip(synthetic[kind], rooted[kind], strict=True):
+                assert with_root.SOPInstanceUID == "1.5." + plain.SOPInstanceUID.removeprefix(
+                    "2.25."
+                ), kind
+
+    def test_unusable_stem_falls_back(self, tmp_path):
+        """A source stem that is too long gives synthetic UIDs and says so."""
+        nifti, _ = _converted_with_series_uid(tmp_path, LONG_SERIES_UID)
+        out = _write_all(tmp_path, nifti, "out", uid_source=True)
+        for kind, datasets in out["written"].items():
+            assert out["results"][kind].uid_fallback, kind
+            assert all(ds.SOPInstanceUID.startswith("2.25.") for ds in datasets), kind
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"uid_root": "1.02"}, "digits separated by dots"),
+            ({"uid_root": "1." + "9" * 38}, "longer than 39"),
+            ({"uid_root": "1.5", "uid_source": True}, "cannot be combined"),
+        ],
+        ids=["malformed", "too-long", "combined"],
+    )
+    def test_bad_options_fail_before_any_file(self, tmp_path, options, message):
+        """Bad UID options raise ``UidError`` before inputs are read or outputs written."""
+        missing = tmp_path / "missing.nii.gz"
+        calls = [
+            lambda: dt.to_seg(missing, missing, SEG_META, tmp_path / "seg.dcm", **options),
+            lambda: dt.to_pmap(missing, missing, PMAP_META, tmp_path / "pm.dcm", **options),
+            lambda: dt.to_mr(missing, missing, PMAP_META, tmp_path / "mr", **options),
+        ]
+        for call in calls:
+            with pytest.raises(dt.UidError, match=message):
+                call()
+        assert list(tmp_path.iterdir()) == []
+
+
+def _cli_uid_commands(tmp_path: Path, nifti: Path) -> dict[str, list[str]]:
+    """CLI arguments (without UID options) of the three derivative commands."""
+    labels, values = _derivatives(tmp_path, nifti)
+    seg_meta, pmap_meta = tmp_path / "seg.json", tmp_path / "pmap.json"
+    seg_meta.write_text(json.dumps(SEG_META))
+    pmap_meta.write_text(json.dumps(PMAP_META))
+    out = tmp_path / "cli"
+    return {
+        "to-seg": ["to-seg", str(nifti), str(labels), str(seg_meta), str(out / "seg.dcm")],
+        "to-pmap": ["to-pmap", str(nifti), str(values), str(pmap_meta), str(out / "pm.dcm")],
+        "to-mr": ["to-mr", str(nifti), str(values), str(pmap_meta), str(out / "mr")],
+    }
+
+
+def _cli_written(command: str, tmp_path: Path) -> list:
+    out = tmp_path / "cli"
+    paths = sorted((out / "mr").iterdir()) if command == "to-mr" else list(out.iterdir())
+    return [pydicom.dcmread(p) for p in paths]
+
+
+class TestDerivedUidsCli:
+    """``--uid-root`` / ``--uid-source`` on to-seg, to-pmap and to-mr."""
+
+    @pytest.mark.parametrize("command", ["to-seg", "to-pmap", "to-mr"])
+    @pytest.mark.parametrize(
+        ("options", "prefix"),
+        [([], "2.25."), (["--uid-root", "1.5"], "1.5."), (["--uid-source"], "1.2.3.4.")],
+        ids=["synthetic", "org-root", "source-stem"],
+    )
+    def test_options_set_the_prefix(self, tmp_path, command, options, prefix):
+        nifti, _ = _converted_with_series_uid(tmp_path, SHORT_SERIES_UID)
+        args = _cli_uid_commands(tmp_path, nifti)[command]
+        result = CliRunner().invoke(main, [*args, *options])
+        assert result.exit_code == 0, result.output
+        assert "note:" not in result.output
+        for ds in _cli_written(command, tmp_path):
+            assert ds.SeriesInstanceUID.startswith(prefix)
+            assert ds.SOPInstanceUID.startswith(prefix)
+
+    @pytest.mark.parametrize("command", ["to-seg", "to-pmap", "to-mr"])
+    @pytest.mark.parametrize(
+        "options",
+        [["--uid-root", "1..2"], ["--uid-root", "1.5", "--uid-source"]],
+        ids=["invalid-root", "both"],
+    )
+    def test_bad_options_are_one_line_errors(self, tmp_path, command, options):
+        nifti, _ = _converted_with_series_uid(tmp_path, SHORT_SERIES_UID)
+        args = _cli_uid_commands(tmp_path, nifti)[command]
+        result = CliRunner().invoke(main, [*args, *options])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert result.output.startswith("Error: ")
+        assert "Traceback" not in result.output and "1..2" not in result.output
+        assert not (tmp_path / "cli").exists()
+
+    @pytest.mark.parametrize("command", ["to-seg", "to-pmap", "to-mr"])
+    def test_unusable_stem_prints_a_note(self, tmp_path, command):
+        nifti, _ = _converted_with_series_uid(tmp_path, LONG_SERIES_UID)
+        args = _cli_uid_commands(tmp_path, nifti)[command]
+        result = CliRunner().invoke(main, [*args, "--uid-source"])
+        assert result.exit_code == 0, result.output
+        assert result.output.splitlines()[-1] == (
+            "note: source UID stem not usable, synthetic 2.25 UIDs written"
+        )
+        assert LONG_SERIES_UID not in result.output
+        assert all(ds.SOPInstanceUID.startswith("2.25.") for ds in _cli_written(command, tmp_path))
 
 
 def test_damaged_tether_raises_from_every_single_series_function(tmp_path, converted):
