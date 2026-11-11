@@ -5,6 +5,7 @@ patient names, UIDs or file paths; series are named by their **manifest id** (`s
 Existing files are never overwritten. Research use only.
 
 Every command is also a Python function with the same behaviour: see [Python API](api.md).
+Without a terminal: the [desktop app](gui.md).
 
 ## Workflow
 
@@ -67,6 +68,8 @@ when done. They are not shown when the output is redirected; set `TQDM_DISABLE=1
 off in a terminal as well.
 
 ### `merge DATASET [--ids 4,5,6] [--in-place | --replace]` (experimental)
+
+The desktop app has the same command on its Merge tab ([GUI](gui.md)).
 
 Some scanners write one series per b-value (e.g. IVIM). Each is converted on its own; `merge`
 adds one 4D NIfTI + sidecar + `*.tether.json` per measurement (`…_desc-merged_dwi.nii.gz`).
