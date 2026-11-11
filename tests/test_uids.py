@@ -117,16 +117,25 @@ class TestStem:
 
     @pytest.mark.parametrize(
         "uid",
-        ["1", "", "1..2", "1.02.3", TOO_LONG_ROOT + ".5"],
-        ids=["single-component", "empty", "empty-component", "leading-zero", "too-long"],
+        ["1", "", "1..2", "1.02.3", "9" * 40 + ".5"],
+        ids=["single-component", "empty", "empty-component", "leading-zero", "long-first"],
     )
     def test_unusable_gives_none(self, uid):
-        """A stem that cannot prefix derived UIDs gives ``None``."""
+        """A malformed UID, or one whose first component alone is too long, gives ``None``."""
         assert uids.stem(uid) is None
 
     def test_longest_stem_accepted(self):
-        """A stem of 39 characters is still usable."""
+        """A stem of 39 characters is kept whole."""
         assert uids.stem(LONGEST_ROOT + ".5") == LONGEST_ROOT
+
+    def test_too_long_stem_is_shortened_at_a_dot(self):
+        """A stem over 39 characters loses trailing components until it fits."""
+        assert uids.stem(TOO_LONG_ROOT + ".5") == "1"
+        uid = ".".join(["1", "2"] + ["12345"] * 10)  # 63 characters, stem of 57
+        short = uids.stem(uid)
+        assert short == ".".join(["1", "2"] + ["12345"] * 6)  # 39 characters
+        assert len(short) <= uids.MAX_ROOT and uids.check_root(short) == short
+        assert uid.startswith(short + ".")
 
 
 class TestUidPrefix:
@@ -150,8 +159,9 @@ class TestUidPrefix:
         assert uids.uid_prefix("1.2.3.4", uid_source=True) == ("1.2.3", False)
 
     def test_source_stem_fallback(self):
-        """An unusable stem falls back to synthetic and says so."""
-        assert uids.uid_prefix(TOO_LONG_ROOT + ".5", uid_source=True) == (None, True)
+        """A malformed source UID falls back to synthetic and says so."""
+        assert uids.uid_prefix("1.02.3", uid_source=True) == (None, True)
+        assert uids.uid_prefix(TOO_LONG_ROOT + ".5", uid_source=True) == ("1", False)
 
     def test_options_exclusive(self):
         """Org root and source stem cannot be combined."""
