@@ -50,7 +50,6 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
-    { name = "darkdetect" },
     { name = "highdicom" },
     { name = "nibabel" },
     { name = "numpy" },
@@ -59,23 +58,30 @@ dependencies = [
     { name = "pylibjpeg-libjpeg" },
     { name = "pylibjpeg-openjpeg" },
     { name = "pylibjpeg-rle" },
-    { name = "sv-ttk" },
     { name = "tqdm" },
+]
+
+[package.optional-dependencies]
+gui = [
+    { name = "darkdetect" },
+    { name = "sv-ttk" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "darkdetect" },
     { name = "dcm2niix" },
     { name = "dicom-validator" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "sv-ttk" },
     { name = "zstandard" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.5.0" },
-    { name = "darkdetect", specifier = ">=0.8.0" },
+    { name = "darkdetect", marker = "extra == 'gui'", specifier = ">=0.8.0" },
     { name = "highdicom", specifier = ">=0.28.2" },
     { name = "nibabel", specifier = ">=5.4.2" },
     { name = "numpy", specifier = ">=2.5.3" },
@@ -84,16 +90,19 @@ requires-dist = [
     { name = "pylibjpeg-libjpeg", specifier = ">=2.4.0" },
     { name = "pylibjpeg-openjpeg", specifier = ">=2.6.0" },
     { name = "pylibjpeg-rle", specifier = ">=2.2.0" },
-    { name = "sv-ttk", specifier = ">=2.6.1" },
+    { name = "sv-ttk", marker = "extra == 'gui'", specifier = ">=2.6.1" },
     { name = "tqdm", specifier = ">=4.70.1" },
 ]
+provides-extras = ["gui"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "darkdetect", specifier = ">=0.8.0" },
     { name = "dcm2niix", specifier = ">=1.0.20260724" },
     { name = "dicom-validator", specifier = ">=0.9.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.10" },
+    { name = "sv-ttk", specifier = ">=2.6.1" },
     { name = "zstandard", specifier = ">=0.25.0" },
 ]
 
