@@ -11,9 +11,10 @@ file formats).
 
 - `--uid-root ROOT` and `--uid-source` for `to-seg`, `to-pmap` and `to-mr` (API: `uid_root=`,
   `uid_source=`): new Series and SOP Instance UIDs as `<ROOT>.<hash digits>` or starting with
-  the source series UID up to its last dot, instead of the synthetic `2.25.<hash>` (still the
-  default). The options cannot be combined; an unusable source stem falls back to `2.25.`
-  (`uid_fallback` on the results, a note on the CLI). The API adds `UidError`.
+  the source series UID up to its last dot (shortened at a dot to 39 characters), instead of
+  the synthetic `2.25.<hash>` (still the default). The options cannot be combined; a malformed
+  source UID falls back to `2.25.` (`uid_fallback` on the results, a note on the CLI). The API
+  adds `UidError`.
 - Diffusion b-matrix in the sidecar: `DcmTether.PerVolume.DiffusionBMatrix` (Bxx, Bxy, Bxz, Byy,
   Byz, Bzz per volume) from the standard enhanced-MR elements `DiffusionBValueXX`–`ZZ` or
   Siemens' `(0019,xx27)`; also in merged sidecars.

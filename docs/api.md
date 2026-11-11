@@ -121,10 +121,10 @@ New Series and SOP Instance UIDs end in digits hashed from the source and the de
 |---|---|
 | neither (default) | `2.25.` (synthetic, no organisation root needed) |
 | `uid_root="1.2.3"` | the given root; use only one your organisation owns (at most 39 characters) |
-| `uid_source=True` | the source series UID up to its last dot (another organisation's root) |
+| `uid_source=True` | the source series UID up to its last dot, shortened at a dot to 39 characters (another organisation's root) |
 
-`uid_root` and `uid_source` cannot be combined. If the source stem is not usable (malformed or
-longer than 39 characters), synthetic UIDs are written and the result's `uid_fallback` is true.
+`uid_root` and `uid_source` cannot be combined. If the source UID is malformed or has no usable
+stem, synthetic UIDs are written and the result's `uid_fallback` is true.
 
 ### `to_seg(nifti, labels, metadata, output, *, uid_root=None, uid_source=False, log=True)` → `SegResult`
 
