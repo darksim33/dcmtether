@@ -28,7 +28,8 @@ dt.to_dcm("dataset/sub-…/….nii.gz", "rebuilt/")
 
 - [Usage](docs/usage.md): workflow and every command.
 - [Python API](docs/api.md): the commands as functions.
-- [Desktop app](docs/gui.md): a window for the same commands; portable Windows app.
+- [Desktop app](docs/gui.md): a window for the same commands (optional `gui` extra:
+  `uv tool install "dcmtether[gui]"`); portable Windows app.
 - [Formats](docs/formats.md): dataset layout, file names, `*.tether.json`, sidecar, manifest, log.
 - [Supported inputs](docs/supported-inputs.md): what converts, what does not, and why.
 - Example metadata templates: [`docs/examples/`](docs/examples/); writing your own:

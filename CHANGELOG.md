@@ -27,8 +27,12 @@ file formats).
 
 ### Changed
 
+- The desktop app's dependencies (`sv-ttk`, `darkdetect`) are the optional `gui` extra:
+  `uv tool install "dcmtether[gui]"`. The CLI and the API no longer install them;
+  `dcmtether-gui` without the extra says how to add it. The Windows build includes them.
 - Desktop app: modern Windows 11 look (Sun Valley theme via `sv-ttk`), following the system's
-  light or dark mode, with a "Dark mode" switch. New dependencies: `sv-ttk` and `darkdetect`.
+  light or dark mode, with a "Dark mode" switch. New dependencies (`gui` extra): `sv-ttk` and
+  `darkdetect`.
 - Desktop app: the log is hidden by default ("Show log" shows it; it opens by itself when a run
   had problems or failed). The status for a run with problems now says "(see log)".
 

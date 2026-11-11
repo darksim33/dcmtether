@@ -57,8 +57,10 @@ Output: `dist/dcmtether-gui-<version>-win64.zip`, containing the folder `dcmteth
 
 What the script does:
 
-1. `uv sync --no-dev`: drops the dev tools, so they cannot end up in the app.
-2. Runs PyInstaller (`uv run --no-dev --with pyinstaller`, not a project dependency) on
+1. `uv sync --no-dev --extra gui`: drops the dev tools, so they cannot end up in the app, and
+   keeps the optional `gui` extra (`sv-ttk`, `darkdetect`).
+2. Runs PyInstaller (`uv run --no-dev --extra gui --with pyinstaller`, not a project
+   dependency) on
    `packaging/dcmtether-gui.spec`. The spec builds the icon from `docs/assets/logo.png` and
    collects the package metadata and data files that the import analysis cannot see.
 3. Starts `dist/dcmtether-gui/dcmtether-gui.exe --self-test`. The app has no console, so the

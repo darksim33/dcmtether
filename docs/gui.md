@@ -10,8 +10,11 @@ files, compare two series, and write derivatives back as DICOM. Research use onl
   folder. Nothing is installed and no admin rights are needed. To remove it, delete the folder.
   The app is not signed: on the first start Windows SmartScreen may say "Windows protected your
   PC"; choose "More info" → "Run anyway".
-- **With Python:** `uv run dcmtether-gui` in a clone of the repository, or
-  `uv tool install <wheel>` and then `dcmtether-gui`.
+- **With Python:** the app is the optional `gui` extra (it adds the `sv-ttk` theme and
+  `darkdetect`). Install it with `uv tool install "dcmtether[gui]"` (or a wheel:
+  `uv tool install "<wheel>[gui]"`) and start `dcmtether-gui`. In a clone of the repository,
+  `uv run dcmtether-gui` works as is (the dev environment includes the extra). Without the
+  extra, `dcmtether-gui` says how to install it.
 
 ## Tabs
 
