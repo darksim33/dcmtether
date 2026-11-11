@@ -21,6 +21,9 @@ from dcmtether.gui import self_test
 from dcmtether.gui.worker import Done, Failed, Lines, Progress, Worker, safe_message
 from dcmtether.seg import SegResult
 
+# The desktop app is the optional `gui` extra: without it, these tests do not apply.
+pytest.importorskip("sv_ttk")
+
 
 def _messages(worker: Worker, timeout: float = 60) -> list:
     found, deadline = [], time.monotonic() + timeout
@@ -78,6 +81,25 @@ def test_errors_are_shown_without_values(error, shown):
 
 def test_self_test_passes_in_the_development_environment():
     assert self_test() == []
+
+
+def test_missing_gui_extra_shows_how_to_install_it(monkeypatch, capsys):
+    import sys
+    from tkinter import messagebox
+
+    from dcmtether import gui
+
+    shown = []
+    monkeypatch.setattr(messagebox, "showerror", lambda title, text: shown.append(text))
+    monkeypatch.setattr(sys, "argv", ["dcmtether-gui"])
+    monkeypatch.setitem(sys.modules, "sv_ttk", None)  # "not installed"
+    for name in ("dcmtether.gui.theme", "dcmtether.gui.app"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    with pytest.raises(SystemExit) as exit_info:
+        gui.main()
+    assert exit_info.value.code == 1
+    assert shown == [gui.MISSING_EXTRA]
+    assert gui.MISSING_EXTRA in capsys.readouterr().err
 
 
 # --- window ------------------------------------------------------------------------------------
