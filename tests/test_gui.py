@@ -291,6 +291,8 @@ def test_uid_fallback_note_is_shown(app, fake_seg):
     fake_seg.fallback = True
     app.uid_mode.set("source")
     assert report.UID_FALLBACK in _press(app, app.derive)
+    assert app.status.get() == "Done, with problems (see log)."
+    assert app.show_log.get()
 
 
 def test_progress_block_shows_counts_and_stays_full_after_a_run(app, tmp_path):
