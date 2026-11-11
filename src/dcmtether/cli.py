@@ -2,11 +2,10 @@
 
 Output and logs never name patients, UIDs or paths: series are referred to by manifest id.
 Commands that work on a dataset append structured records to ``DATASET/logs/dcmtether_<time>.jsonl``
-(:mod:`dcmtether.log`).
+(:mod:`dcmtether.log`). The wording of the output lives in :mod:`dcmtether.report`.
 """
 
 import sys
-from collections import Counter
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,11 +13,11 @@ from pathlib import Path
 import click
 from tqdm import tqdm
 
-from dcmtether import __version__, api
-from dcmtether.api import ConversionResult, ScanSummary
+from dcmtether import __version__, api, report
+from dcmtether.api import ScanSummary
 from dcmtether.errors import DcmtetherError
 from dcmtether.manifest import ManifestUpdate
-from dcmtether.scanning import Status, plural
+from dcmtether.merge import MergeError, parse_ids
 
 _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
@@ -63,6 +62,11 @@ def _errors() -> Iterator[None]:
         raise click.ClickException(str(exc)) from None
 
 
+def _echo(lines: list[str]) -> None:
+    for line in lines:
+        click.echo(line)
+
+
 @click.group(help="Lossless DICOM <-> NIfTI round trips for MRI series. Research use only.")
 @click.version_option(__version__, prog_name="dcmtether", message=_NOTICE)
 def main() -> None:
@@ -70,65 +74,6 @@ def main() -> None:
 
 
 # --- scanning and conversion -------------------------------------------------------------------
-
-
-def _report_scan(
-    summary: ScanSummary, only: set[int] | None = None, body_part: bool = False
-) -> None:
-    """Counts, then the non-supported series (by manifest id; every series with
-    ``body_part``) and the skipped files."""
-    click.echo(
-        f"Scanned {summary.n_files} files: {summary.n_instances} DICOM instances in "
-        f"{len(summary.series)} series, {plural(summary.n_skipped, 'file')} skipped."
-    )
-    for status in Status:
-        click.echo(f"  {status.value + ':':<13}{summary.count(status)}")
-    for series in summary.series:
-        if only is not None and series.id not in only:
-            continue
-        if series.status is Status.SUPPORTED and not body_part:
-            continue
-        details = plural(series.n_instances, "instance")
-        if body_part:
-            details += f", body part {series.body_part or 'not set'}"
-        line = f"  series #{series.id} ({details}) {series.status.value}"
-        if series.status is not Status.SUPPORTED:
-            line += f": {'; '.join(series.reasons)}"
-        click.echo(line)
-    for reason, n in summary.skipped.items():
-        click.echo(f"  skipped {plural(n, 'file')}: {reason}")
-
-
-def _report_update(summary: ScanSummary, update: ManifestUpdate, body_part: bool) -> None:
-    _report_scan(summary, only=set(update.new) | set(update.rescanned), body_part=body_part)
-    click.echo(
-        f"Manifest: {len(update.new)} new series, {len(update.rescanned)} rescanned, "
-        f"{len(update.unchanged)} unchanged."
-    )
-    for series_id in update.changed_after_conversion:
-        click.echo(
-            f"  series #{series_id}: source files changed after conversion (not "
-            "reconverted; remove its outputs and manifest entry to redo it)"
-        )
-    for series_id in update.missing:
-        click.echo(f"  series #{series_id}: no longer found in SOURCE (kept in the manifest)")
-
-
-def _report_conversion(result: ConversionResult, verbose: bool) -> None:
-    """Console lines for a conversion; exit code 1 if a series failed."""
-    click.echo(f"Converted {len(result.converted)} series, {len(result.failed)} failed.")
-    for outcome in result.outcomes:
-        if outcome.ok:
-            if verbose:
-                click.echo(
-                    f"  series #{outcome.series_id} converted ({plural(outcome.outputs, 'output')})"
-                )
-            if outcome.warning:
-                click.echo(f"  series #{outcome.series_id} warning: {outcome.warning}")
-        else:
-            click.echo(f"  series #{outcome.series_id} failed: {outcome.message}")
-    if not result.ok:
-        raise click.exceptions.Exit(1)
 
 
 @main.command()
@@ -142,7 +87,7 @@ def scan(source: Path, dataset: Path, body_part: bool) -> None:
     """
     with _errors():
         summary = api.scan(source, dataset, progress=_progress)
-    _report_scan(summary, body_part=body_part)
+    _echo(report.scan_lines(summary, body_part=body_part))
     click.echo("Manifest written.")
 
 
@@ -158,7 +103,9 @@ def to_nii(dataset: Path, full_name: bool, verbose: bool) -> None:
     """
     with _errors():
         result = api.to_nii(dataset, full_name=full_name, progress=_progress)
-    _report_conversion(result, verbose)
+    _echo(report.conversion_lines(result, verbose))
+    if not result.ok:
+        raise click.exceptions.Exit(1)
 
 
 @main.command()
@@ -185,20 +132,20 @@ def run(
     """
 
     def scanned(summary: ScanSummary, update: ManifestUpdate) -> None:
-        _report_update(summary, update, body_part)
+        _echo(report.update_lines(summary, update, body_part))
 
     with _errors():
         result = api.run(source, dataset, full_name=full_name, progress=_progress, _scanned=scanned)
-    _report_conversion(result.conversion, verbose)
+    _echo(report.conversion_lines(result.conversion, verbose))
+    if not result.ok:
+        raise click.exceptions.Exit(1)
 
 
 def _series_ids(ctx, param, value: str | None) -> list[int] | None:
-    if value is None:
-        return None
     try:
-        return [int(v) for v in value.split(",") if v.strip()]
-    except ValueError:
-        raise click.BadParameter("expected manifest ids like 4,5,6") from None
+        return parse_ids(value)
+    except MergeError as exc:
+        raise click.BadParameter(str(exc)) from None
 
 
 @main.command()
@@ -230,21 +177,8 @@ def merge(dataset: Path, ids: list[int] | None, in_place: bool, replace: bool) -
         result = api.merge_series(
             dataset, ids, in_place=in_place, replace=replace, progress=_progress
         )
-    if not result.groups:
-        click.echo("No series to merge.")
-    for group in result.groups:
-        listed = ", ".join(f"#{i}" for i in group.series_ids)
-        if group.path is not None:
-            replaced = "; replaced the single series" if group.replaced else ""
-            click.echo(f"Merged series {listed} ({plural(group.n_volumes, 'volume')}){replaced}.")
-            if group.no_tether:
-                click.echo(f"  no tether.json ({group.no_tether}): to-dcm needs the single series")
-            if group.not_replaced:
-                click.echo(f"  not replaced ({group.not_replaced}): the single series stay")
-        else:
-            click.echo(f"Not merged: series {listed}: {group.skipped}.")
-    not_replaced = any(g.not_replaced for g in result.groups)
-    if (ids is not None and result.skipped) or not_replaced:
+    _echo(report.merge_lines(result))
+    if not report.merge_ok(result, ids is not None):
         raise click.exceptions.Exit(1)
 
 
@@ -263,10 +197,7 @@ def to_dcm(nifti: Path, output: Path) -> None:
     """
     with _errors():
         result = api.to_dcm(nifti, output)
-    click.echo(f"Wrote {plural(len(result.paths), 'DICOM file')}.")
-    if result.transfer_syntax_change:
-        source, written = result.transfer_syntax_change
-        click.echo(f"Transfer syntax changed from {source} to {written} (lossless).")
+    _echo(report.dcm_lines(result))
 
 
 @main.command()
@@ -277,18 +208,9 @@ def compare(original: Path, rebuilt: Path) -> None:
 
     Instances are paired by SOPInstanceUID. Exit code 0 if identical, 1 if not.
     """
-    report = api.compare(original, rebuilt)
-    compared = plural(report.n_compared, "instance")
-    if report.identical:
-        click.echo(f"Identical: {compared} compared.")
-    else:
-        click.echo(f"{plural(len(report.differences), 'difference')} in {compared} compared:")
-        for line in report.lines():
-            click.echo(f"  {line}")
-    # Notes repeat per instance (e.g. a transfer syntax change): print each kind once.
-    for (where, kind), n in Counter((note.where, note.kind) for note in report.notes).items():
-        click.echo(f"  note: {where}: {kind} ({plural(n, 'instance')})")
-    if not report.identical:
+    result = api.compare(original, rebuilt)
+    _echo(report.compare_lines(result))
+    if not result.identical:
         raise click.exceptions.Exit(1)
 
 
@@ -308,11 +230,6 @@ def _uid_options(command):
         metavar="ROOT",
         help="Organisation UID root for the new UIDs (default: synthetic 2.25.<hash>).",
     )(command)
-
-
-def _uid_fallback_note(uid_fallback: bool) -> None:
-    if uid_fallback:
-        click.echo("note: source UID stem not usable, synthetic 2.25 UIDs written")
 
 
 @main.command("to-seg")
@@ -339,15 +256,7 @@ def to_seg_command(
         result = api.to_seg(
             nifti, labels, metadata, output, uid_root=uid_root, uid_source=uid_source
         )
-    click.echo(
-        f"Wrote DICOM SEG with {plural(len(result.segment_numbers), 'segment')} on "
-        f"{plural(result.n_sources, 'source image')}."
-    )
-    renumbered = {k: v for k, v in result.segment_numbers.items() if k != v}
-    if renumbered:
-        pairs = ", ".join(f"{k}->{v}" for k, v in sorted(renumbered.items()))
-        click.echo(f"Label values renumbered to segment numbers: {pairs}.")
-    _uid_fallback_note(result.uid_fallback)
+    _echo(report.seg_lines(result))
 
 
 @main.command("to-pmap")
@@ -374,11 +283,7 @@ def to_pmap_command(
         result = api.to_pmap(
             nifti, map_nifti, metadata, output, uid_root=uid_root, uid_source=uid_source
         )
-    click.echo(
-        f"Wrote DICOM Parametric Map ({result.dtype}) on "
-        f"{plural(result.n_sources, 'source image')}."
-    )
-    _uid_fallback_note(result.uid_fallback)
+    _echo(report.pmap_lines(result))
 
 
 @main.command("to-mr")
@@ -405,8 +310,4 @@ def to_mr_command(
         result = api.to_mr(
             nifti, derivative, metadata, output, uid_root=uid_root, uid_source=uid_source
         )
-    click.echo(f"Wrote {plural(len(result.paths), 'derived MR image')} ({result.kind}).")
-    if result.max_error > 0:
-        cause = "Rescale rounded to DS precision" if result.rounded else "Quantized to 16 bits"
-        click.echo(f"{cause}: max error {result.max_error:.3g} (to-pmap is exact).")
-    _uid_fallback_note(result.uid_fallback)
+    _echo(report.mr_lines(result))

@@ -9,15 +9,37 @@ file formats).
 
 ### Added
 
+- Desktop app: a Merge tab (the CLI's `merge`; replacing the single series asks first) and a
+  progress block (label, `n / total` count and a bar that stays full after a run).
+- `merge.parse_ids` and `report.merge_lines` / `report.merge_ok`: the id parsing and the result
+  lines of `merge`, shared by the CLI and the GUI. `scan_lines` and `update_lines` take
+  `body_part`.
 - `--uid-root ROOT` and `--uid-source` for `to-seg`, `to-pmap` and `to-mr` (API: `uid_root=`,
   `uid_source=`): new Series and SOP Instance UIDs as `<ROOT>.<hash digits>` or starting with
-  the source series UID up to its last dot (shortened at a dot to 39 characters), instead of
-  the synthetic `2.25.<hash>` (still the default). The options cannot be combined; a malformed
-  source UID falls back to `2.25.` (`uid_fallback` on the results, a note on the CLI). The API
-  adds `UidError`.
+  the source series UID up to its last dot, instead of the synthetic `2.25.<hash>` (still the
+  default). The options cannot be combined; an unusable source stem falls back to `2.25.`
+  (`uid_fallback` on the results, a note from `report.seg_lines` / `pmap_lines` / `mr_lines`).
+  The API adds `UidError`. Desktop app: a "UIDs" choice (Synthetic / Org root / Source stem)
+  in the Derivatives tab.
 - Diffusion b-matrix in the sidecar: `DcmTether.PerVolume.DiffusionBMatrix` (Bxx, Bxy, Bxz, Byy,
   Byz, Bzz per volume) from the standard enhanced-MR elements `DiffusionBValueXX`–`ZZ` or
   Siemens' `(0019,xx27)`; also in merged sidecars.
+
+### Changed
+
+- The desktop app's dependencies (`sv-ttk`, `darkdetect`) are the optional `gui` extra:
+  `uv tool install "dcmtether[gui]"`. The CLI and the API no longer install them;
+  `dcmtether-gui` without the extra says how to add it. The Windows build includes them.
+- Desktop app: modern Windows 11 look (Sun Valley theme via `sv-ttk`), following the system's
+  light or dark mode, with a "Dark mode" switch. New dependencies (`gui` extra): `sv-ttk` and
+  `darkdetect`.
+- Desktop app: the log is hidden by default ("Show log" shows it; it opens by itself when a run
+  had problems or failed). The status for a run with problems now says "(see log)".
+
+### Fixed
+
+- `dcmtether.cli` could not be imported after the GUI branch was merged (leftover scan and
+  conversion helpers without their imports); the CLI uses the shared `report` lines again.
 
 ## [0.2.0] - 2026-10-23
 

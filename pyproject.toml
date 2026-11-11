@@ -19,8 +19,18 @@ dependencies = [
     "tqdm>=4.70.1",
 ]
 
+[project.optional-dependencies]
+# The desktop app (dcmtether-gui): uv tool install "dcmtether[gui]"
+gui = [
+    "darkdetect>=0.8.0",
+    "sv-ttk>=2.6.1",
+]
+
 [project.scripts]
 dcmtether = "dcmtether.cli:main"
+
+[project.gui-scripts]
+dcmtether-gui = "dcmtether.gui:main"
 
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]
@@ -28,10 +38,12 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "darkdetect>=0.8.0",
     "dcm2niix>=1.0.20260724",
     "dicom-validator>=0.9.0",
     "pytest>=9.1.1",
     "ruff>=0.16.10",
+    "sv-ttk>=2.6.1",
     "zstandard>=0.25.0",
 ]
 
