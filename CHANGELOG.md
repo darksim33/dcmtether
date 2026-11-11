@@ -7,8 +7,14 @@ file formats).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-11
+
 ### Added
 
+- Desktop app `dcmtether-gui` (optional `gui` extra, see Changed): the CLI's commands in a
+  window with folder pickers, one tab each for Convert, Merge, Rebuild, Compare and
+  Derivatives. Also as a portable Windows app (`dcmtether-gui-<version>-win64.zip` on the
+  release, built with `scripts/build_windows.ps1`; see `docs/dev/Install.md`).
 - Desktop app: a Merge tab (the CLI's `merge`; replacing the single series asks first) and a
   progress block (label, `n / total` count and a bar that stays full after a run).
 - `merge.parse_ids` and `report.merge_lines` / `report.merge_ok`: the id parsing and the result
@@ -16,9 +22,10 @@ file formats).
   `body_part`.
 - `--uid-root ROOT` and `--uid-source` for `to-seg`, `to-pmap` and `to-mr` (API: `uid_root=`,
   `uid_source=`): new Series and SOP Instance UIDs as `<ROOT>.<hash digits>` or starting with
-  the source series UID up to its last dot, instead of the synthetic `2.25.<hash>` (still the
-  default). The options cannot be combined; an unusable source stem falls back to `2.25.`
-  (`uid_fallback` on the results, a note from `report.seg_lines` / `pmap_lines` / `mr_lines`).
+  the source series UID up to its last dot (shortened at a dot to 39 characters), instead of
+  the synthetic `2.25.<hash>` (still the default). The options cannot be combined; a malformed
+  source UID falls back to `2.25.` (`uid_fallback` on the results, a note from
+  `report.seg_lines` / `pmap_lines` / `mr_lines`).
   The API adds `UidError`. Desktop app: a "UIDs" choice (Synthetic / Org root / Source stem)
   in the Derivatives tab.
 - Diffusion b-matrix in the sidecar: `DcmTether.PerVolume.DiffusionBMatrix` (Bxx, Bxy, Bxz, Byy,
@@ -151,5 +158,7 @@ First release. Research use only — not for clinical or diagnostic use.
 - The dataset identifies patients, through file names, the manifest and the tethers. Do not
   share it as is.
 
-[Unreleased]: https://github.com/darksim33/dcmtether/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/darksim33/dcmtether/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/darksim33/dcmtether/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/darksim33/dcmtether/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/darksim33/dcmtether/releases/tag/v0.1.0
