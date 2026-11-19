@@ -499,6 +499,7 @@ _SIDECAR_KEYWORDS = [  # (DICOM keyword, BIDS key, scale)
     ("ScanOptions", "ScanOptions", None),
     ("SequenceName", "SequenceName", None),
     ("MRAcquisitionType", "MRAcquisitionType", None),
+    ("InPlanePhaseEncodingDirection", "InPlanePhaseEncodingDirection", None),
     ("SliceThickness", "SliceThickness", None),
     ("SpacingBetweenSlices", "SpacingBetweenSlices", None),
     ("EchoTime", "EchoTime", 1e-3),  # BIDS: seconds
@@ -513,6 +514,22 @@ _SIDECAR_KEYWORDS = [  # (DICOM keyword, BIDS key, scale)
     ("RescaleIntercept", "RescaleIntercept", None),
 ]
 _SIDECAR_KEYS = {keyword: (key, scale) for keyword, key, scale in _SIDECAR_KEYWORDS}
+
+#: InPlanePhaseEncodingDirection → axis of the DICOM-order array (rows, columns, slices):
+#: ``COL`` encodes along a column, i.e. along the row index.
+_PHASE_ENCODING_DICOM_AXIS = {"COL": 0, "ROW": 1}
+
+
+def phase_encoding_axis(direction, ornt) -> str | None:
+    """BIDS ``PhaseEncodingAxis`` (NIfTI ``i``/``j``/``k``) for InPlanePhaseEncodingDirection.
+
+    ``ornt`` maps DICOM-order axes to NIfTI axes (:func:`orientation.to_closest_ras`). Only
+    the axis: DICOM has no polarity, so there is no ``PhaseEncodingDirection``.
+    """
+    if ornt is None or not isinstance(direction, str):
+        return None
+    axis = _PHASE_ENCODING_DICOM_AXIS.get(direction.strip().upper())
+    return None if axis is None else "ijk"[int(ornt[axis][0])]
 
 
 def _plain(value):
@@ -579,6 +596,7 @@ def sidecar(
     chunk: int | None = None,
     acq_source: str | None = None,
     dup: int | None = None,
+    ornt: np.ndarray | None = None,
 ) -> dict:
     """Readable metadata (keyword: value). Not used for recovery; no patient identifiers.
 
@@ -587,6 +605,8 @@ def sidecar(
     differ between volumes go to ``DcmTether.PerVolume`` (one entry per volume) instead of the
     top level. ``PerVolume`` follows the same key and unit rules as the top level (times in
     seconds), also for the volume-key attributes; ``VolumeKey`` names the DICOM keywords.
+    With ``ornt`` (DICOM order → NIfTI axes), InPlanePhaseEncodingDirection is also given as
+    ``PhaseEncodingAxis`` of the NIfTI.
     """
     firsts: dict[int, pydicom.Dataset] = {}
     for ds, index in zip(datasets, indices, strict=True):
@@ -613,6 +633,15 @@ def sidecar(
                     out[key] = values[0]
             else:
                 per_volume[key] = values
+    direction = "InPlanePhaseEncodingDirection"
+    if direction in out:
+        axis = phase_encoding_axis(out[direction], ornt)
+        if axis is not None:
+            out["PhaseEncodingAxis"] = axis
+    elif direction in per_volume:
+        axes = [phase_encoding_axis(v, ornt) for v in per_volume[direction]]
+        if any(a is not None for a in axes):
+            per_volume["PhaseEncodingAxis"] = axes
     info: dict = {"Version": __version__, "SuffixRule": suffix.rule}
     if acq_source is not None:
         info["AcqSource"] = acq_source
@@ -677,6 +706,7 @@ def _convert_part(
         chunk,
         plan.acq_source,
         plan.dup,
+        ornt,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -735,6 +765,10 @@ Philips; named in `DcmTether.DiffusionSource`). GE/Philips gradients are not in 
 coordinates and are listed unconverted as `DiffusionGradientVendor`. They are always under
 `PerVolume`, also for a series with a single volume (e.g. one series per b-value). A b-matrix
 (standard enhanced-MR elements or Siemens' private tag) is listed as `DiffusionBMatrix`.
+
+`InPlanePhaseEncodingDirection` (`ROW`/`COL`) is also given as `PhaseEncodingAxis`, the NIfTI
+voxel axis (`i`/`j`/`k`) it runs along. DICOM does not record the polarity, so there is no
+`PhaseEncodingDirection`.
 
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 

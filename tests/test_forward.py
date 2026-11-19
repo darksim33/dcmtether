@@ -11,6 +11,8 @@ import pytest
 from click.testing import CliRunner
 from roundtrip import SPECS, output_rows
 from synthetic import (
+    AXIAL,
+    CORONAL,
     SAGITTAL,
     SeriesSpec,
     SyntheticSeries,
@@ -391,6 +393,54 @@ def test_sidecar(tmp_path):
     assert sidecar["DcmTether"]["SuffixRule"] == "parameters:TR/TE"
     for key in ("PatientName", "PatientID", "PatientBirthDate", "StudyDate"):
         assert key not in sidecar
+
+
+def _sidecar_of(nifti: Path) -> dict:
+    return json.loads(nifti.with_name(nifti.name.removesuffix(".nii.gz") + ".json").read_text())
+
+
+def _expected_axis(series: SyntheticSeries, direction: str) -> str:
+    """NIfTI axis along the phase-encoding direction in world space (closest RAS: i≈x, ...)."""
+    row_dir, col_dir = series.spec.orientation
+    vector = col_dir if direction == "COL" else row_dir
+    return "ijk"[int(np.argmax(np.abs(vector)))]
+
+
+@pytest.mark.parametrize("direction", ["ROW", "COL"])
+@pytest.mark.parametrize("orient", ["axial", "coronal", "sagittal"])
+def test_sidecar_phase_encoding_axis(tmp_path, direction, orient):
+    spec = SeriesSpec(
+        orientation={"axial": AXIAL, "coronal": CORONAL, "sagittal": SAGITTAL}[orient],
+        extra={"InPlanePhaseEncodingDirection": direction},
+    )
+    series = make_series(spec)
+    dataset = _dataset(tmp_path, series)
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    sidecar = _sidecar_of(_single_output(dataset))
+    assert sidecar["InPlanePhaseEncodingDirection"] == direction
+    assert sidecar["PhaseEncodingAxis"] == _expected_axis(series, direction)
+    assert "PhaseEncodingDirection" not in sidecar  # no polarity in DICOM
+
+
+def test_sidecar_without_phase_encoding(tmp_path):
+    dataset = _dataset(tmp_path, make_series())
+    convert_dataset(dataset)
+    sidecar = _sidecar_of(_single_output(dataset))
+    assert "InPlanePhaseEncodingDirection" not in sidecar
+    assert "PhaseEncodingAxis" not in sidecar
+
+
+def test_enhanced_sidecar_phase_encoding_from_functional_groups(tmp_path):
+    series = make_enhanced(make_series(SeriesSpec(orientation=SAGITTAL)))
+    for ds in series.datasets:
+        fov = pydicom.Dataset()
+        fov.InPlanePhaseEncodingDirection = "COL"
+        ds.SharedFunctionalGroupsSequence[0].MRFOVGeometrySequence = pydicom.Sequence([fov])
+    dataset = _dataset(tmp_path, series)
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    sidecar = _sidecar_of(_single_output(dataset))
+    assert sidecar["InPlanePhaseEncodingDirection"] == "COL"
+    assert sidecar["PhaseEncodingAxis"] == _expected_axis(series, "COL")
 
 
 def test_manifest_records_outputs(tmp_path):
