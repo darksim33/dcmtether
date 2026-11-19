@@ -95,6 +95,11 @@ identifiers. `DcmTether` holds tool information: `Version`, `SuffixRule`, `AcqSo
 for 4D series `VolumeKey` (the DICOM attribute that tells the volumes apart), and
 `PerVolume` (values that differ between volumes, and diffusion values; see below).
 
+`InPlanePhaseEncodingDirection` (0018,1312) is listed as stored (`ROW`/`COL`; for enhanced MR
+from `MRFOVGeometrySequence`), and as `PhaseEncodingAxis`: the NIfTI voxel axis (`i`, `j`
+or `k`) it runs along, after the reorientation to closest RAS. DICOM does not record the
+polarity, so there is no `PhaseEncodingDirection` (`j` vs `j-`).
+
 `PerVolume` uses the same keys and units as the top level: times are in seconds, and the
 echo time of an enhanced series (`EffectiveEchoTime`) is listed as `EchoTime`. Attributes
 without a sidecar key (`EchoNumbers`, `TriggerTime`, diffusion values, …) are listed under
