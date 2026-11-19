@@ -7,6 +7,14 @@ file formats).
 
 ## [Unreleased]
 
+### Added
+
+- Phase encoding in the sidecar: `InPlanePhaseEncodingDirection` (`ROW`/`COL`, as stored; for
+  enhanced MR from `MRFOVGeometrySequence`) and `PhaseEncodingAxis`, the NIfTI voxel axis
+  (`i`/`j`/`k`) it runs along after the reorientation to closest RAS. Both go under
+  `DcmTether.PerVolume` if they differ between volumes. No `PhaseEncodingDirection`: DICOM
+  does not record the polarity.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added
