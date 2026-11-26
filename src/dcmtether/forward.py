@@ -90,6 +90,14 @@ class Planned:
     patient_id: str = ""
     #: Subject label before clash numbering.
     subject_base: str | None = None
+    #: BIDS-style file names; else short ones (``<first>_<ser>[_<sequence>]``).
+    bids: bool = True
+    #: Short names: the given name (else the subject label) and where it came from, and the
+    #: sequence name (from ProtocolName, else SeriesDescription) and the keyword it came from.
+    first: str | None = None
+    first_source: str | None = None
+    sequence: str | None = None
+    name_source: str | None = None
 
     @property
     def datatype(self) -> str:
@@ -102,6 +110,8 @@ class Planned:
         )
 
     def stem_for(self, chunk: int | None) -> str:
+        if not self.bids:
+            return naming.short_file_stem(self.first, self.ser, self.sequence, chunk, self.dup)
         return naming.file_stem(
             self.subject, self.session, self.ser, self.suffix.value, self.acq, chunk, self.dup
         )
@@ -219,14 +229,24 @@ def _number_subjects(
     return subjects, warnings, errors
 
 
+def _name_key(subject: str, session: str, stem: str) -> str:
+    return f"{subject}/{session}/{stem}".casefold()
+
+
 def plan_labels(
-    inputs: list[LabelInput], converted: list[Converted] = (), full_name: bool = False
+    inputs: list[LabelInput],
+    converted: list[Converted] = (),
+    full_name: bool = False,
+    bids: bool = True,
 ) -> dict[int, Planned]:
     """Subject/session labels and file stems for the series still to convert (``inputs``),
     with clash detection against each other and against the ``converted`` series.
 
-    ``full_name``: subject labels from the full patient name instead of 5+5 letters.
+    ``bids``: BIDS-style file names; else short ones (``<GivenName>_<NN>_<ProtocolName>``),
+    whose subject labels are always the full name. ``full_name``: subject labels from the full
+    patient name instead of 5+5 letters.
     """
+    full_name = full_name or not bids
     errors: dict[int, str] = {}
     bases: dict[int, str] = {}
     for item in inputs:
@@ -285,11 +305,12 @@ def plan_labels(
             errors[sid] = "session label clash: several studies with the same StudyDate/StudyTime"
 
     planned: dict[int, Planned] = {}
-    # Stems are compared without case: Windows and macOS file systems do not tell them apart.
-    sharing: dict[str, list[int]] = defaultdict(list)  # stem -> all series, converted included
-    counters: dict[str, set[int]] = defaultdict(set)  # stem -> counters in use
+    # Names are compared without case: Windows and macOS file systems do not tell them apart.
+    # Subject and session are part of the key: short stems do not contain them.
+    sharing: dict[str, list[int]] = defaultdict(list)  # name -> all series, converted included
+    counters: dict[str, set[int]] = defaultdict(set)  # name -> counters in use
     for series in converted:
-        key = series.names.stem.casefold()
+        key = _name_key(series.names.subject, series.names.session, series.names.stem)
         sharing[key].append(series.series_id)
         counters[key].add(series.names.dup or 1)  # a bare name counts as the first
     for item in inputs:
@@ -311,8 +332,27 @@ def plan_labels(
                 text, item.repetition_time, item.echo_time, item.inversion_time
             )
         )
-        acq = naming.acq_label(text)
-        stem = naming.file_stem(subjects[sid], sessions[sid], ser, suffix.value, acq)
+        if bids:
+            acq = naming.acq_label(text)
+            stem = naming.file_stem(subjects[sid], sessions[sid], ser, suffix.value, acq)
+            names = {"acq": acq, "acq_source": acq_source}
+        else:
+            # No given name (phantoms, study codes): the subject label as it is, clash number
+            # included, since then that number alone tells two patients' files apart.
+            first = naming.given_name_label(item.patient_name)
+            first_source = "GivenName" if first is not None else "Subject"
+            first = first or subjects[sid]
+            sequence_text, name_source = naming.protocol_text(
+                item.protocol_name, item.series_description
+            )
+            sequence = naming.sequence_label(sequence_text)
+            stem = naming.short_file_stem(first, ser, sequence)
+            names = {
+                "first": first,
+                "first_source": first_source,
+                "sequence": sequence,
+                "name_source": name_source,
+            }
         planned[sid] = Planned(
             sid,
             subjects[sid],
@@ -320,12 +360,12 @@ def plan_labels(
             stem,
             suffix,
             ser=ser,
-            acq=acq,
-            acq_source=acq_source,
             patient_id=item.patient_id or "",
             subject_base=bases[sid],
+            bids=bids,
+            **names,
         )
-        sharing[stem.casefold()].append(sid)
+        sharing[_name_key(subjects[sid], sessions[sid], stem)].append(sid)
     # Same name (e.g. a repeated SeriesDescription + SeriesNumber): number the new ones in
     # manifest order; converted series keep the counter (or bare name) they have.
     for key, ids in sharing.items():
@@ -597,6 +637,9 @@ def sidecar(
     acq_source: str | None = None,
     dup: int | None = None,
     ornt: np.ndarray | None = None,
+    short_names: bool = False,
+    name_source: str | None = None,
+    first_source: str | None = None,
 ) -> dict:
     """Readable metadata (keyword: value). Not used for recovery; no patient identifiers.
 
@@ -606,7 +649,9 @@ def sidecar(
     top level. ``PerVolume`` follows the same key and unit rules as the top level (times in
     seconds), also for the volume-key attributes; ``VolumeKey`` names the DICOM keywords.
     With ``ornt`` (DICOM order → NIfTI axes), InPlanePhaseEncodingDirection is also given as
-    ``PhaseEncodingAxis`` of the NIfTI.
+    ``PhaseEncodingAxis`` of the NIfTI. With ``short_names`` (the file name does not show the
+    suffix), the suffix is listed as ``Suffix``, the sequence name's source as ``NameSource``
+    and the first name's (``GivenName`` or ``Subject``) as ``FirstNameSource``.
     """
     firsts: dict[int, pydicom.Dataset] = {}
     for ds, index in zip(datasets, indices, strict=True):
@@ -642,9 +687,16 @@ def sidecar(
         axes = [phase_encoding_axis(v, ornt) for v in per_volume[direction]]
         if any(a is not None for a in axes):
             per_volume["PhaseEncodingAxis"] = axes
-    info: dict = {"Version": __version__, "SuffixRule": suffix.rule}
+    info: dict = {"Version": __version__}
+    if short_names:
+        info["Suffix"] = suffix.value
+    info["SuffixRule"] = suffix.rule
     if acq_source is not None:
         info["AcqSource"] = acq_source
+    if first_source is not None:
+        info["FirstNameSource"] = first_source
+    if name_source is not None:
+        info["NameSource"] = name_source
     if diffusion_source is not None:
         info["DiffusionSource"] = diffusion_source
     if dup is not None:
@@ -707,6 +759,9 @@ def _convert_part(
         plan.acq_source,
         plan.dup,
         ornt,
+        short_names=not plan.bids,
+        name_source=plan.name_source,
+        first_source=plan.first_source,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -742,7 +797,7 @@ def _convert_series(
     return outputs
 
 
-DATASET_README = """\
+_README_HEAD = """\
 # dcmtether dataset
 
 **This dataset identifies patients.** Subject labels are built from PatientName and session
@@ -769,7 +824,9 @@ coordinates and are listed unconverted as `DiffusionGradientVendor`. They are al
 `InPlanePhaseEncodingDirection` (`ROW`/`COL`) is also given as `PhaseEncodingAxis`, the NIfTI
 voxel axis (`i`/`j`/`k`) it runs along. DICOM does not record the polarity, so there is no
 `PhaseEncodingDirection`.
+"""
 
+_README_BIDS = """\
 ## File name entities (BIDS-inspired, not BIDS-compliant)
 
 - `sub-`: first 5 letters of the family name + first 5 of the given name (ASCII, CamelCase), or
@@ -793,11 +850,45 @@ voxel axis (`i`/`j`/`k`) it runs along. DICOM does not record the polarity, so t
   else `MR`; the rule used is recorded in the sidecar under `DcmTether.SuffixRule`.
 """
 
+_README_SHORT = """\
+## File names
 
-def _write_readme(dataset: Path) -> None:
+    <FirstName>_<SeriesNumber>[_<ProtocolName>][_<XX>][_chunk-<n>]
+
+- folder `sub-`: family + given + middle name in full (ASCII, CamelCase, digits kept).
+  Different PatientIDs with the same label (e.g. phantoms, study codes as names) are numbered
+  `01`, `02`, ... in manifest order (`sub-PhantomQa01`); a converted patient keeps its label.
+- folder `ses-`: StudyDate `YYYYMMDD`; `THHMM` from StudyTime is appended only when one subject
+  has several studies on the same day.
+- `<FirstName>`: the given name in full (ASCII, digits kept); without one (e.g. phantoms,
+  study codes) the subject label, clash number included (`Phantomqa01_03_t1_vibe`). Which one
+  is recorded in the sidecar under `DcmTether.FirstNameSource` (`GivenName`/`Subject`).
+- `<SeriesNumber>`: at least two digits.
+- `<ProtocolName>`: ProtocolName (else SeriesDescription) in full, with every run of characters
+  other than letters, digits and `-` replaced by one `_`; left out if there is neither. The
+  source is recorded in the sidecar under `DcmTether.NameSource`.
+- `_<XX>`: a counter `_01`, `_02`, ... for series that would share a name in one session (e.g.
+  repeated ProtocolName + SeriesNumber), in manifest order, recorded in the sidecar under
+  `DcmTether.Duplicate`.
+- `_chunk-<n>`: one per image plane when a series holds several (e.g. localizers), numbered in
+  InstanceNumber order.
+
+Diffusion series and diffusion maps calculated by the scanner go to `dwi/`, everything else to
+`anat/`. The sidecar records the series type under `DcmTether.Suffix` (`dwi`; `ADC`, `eADC`,
+`FA`, `TRACE` for maps; else `T1w`, `T2w`, `PDw`, `FLAIR` from keywords in SeriesDescription
+(else ProtocolName) or from TR/TE/TI, else `MR`) and the rule used under `DcmTether.SuffixRule`.
+"""
+
+
+def dataset_readme(bids: bool) -> str:
+    """The dataset's README.md for its file names."""
+    return _README_HEAD + "\n" + (_README_BIDS if bids else _README_SHORT)
+
+
+def _write_readme(dataset: Path, bids: bool) -> None:
     readme = dataset / "README.md"
     if not readme.exists():
-        readme.write_text(DATASET_README, encoding="utf-8")
+        readme.write_text(dataset_readme(bids), encoding="utf-8")
 
 
 def _is_diffusion(geometry_json: str) -> bool:
@@ -808,20 +899,37 @@ def _is_diffusion(geometry_json: str) -> bool:
     return any("DiffusionBValue" in key for key in keys)
 
 
-def _subject_names(db, full_name: bool | None) -> bool:
+def _any_converted(db) -> bool:
+    row = db.execute("SELECT 1 FROM series WHERE conversion_status = 'converted' LIMIT 1")
+    return row.fetchone() is not None
+
+
+def _file_names(db, bids: bool | None) -> bool:
+    """Settle how this dataset names its files (stored in the manifest): short unless asked
+    for BIDS names before anything was converted; one dataset never mixes both forms."""
+    stored = manifest.file_names(db)
+    current = stored or manifest.SHORT_NAMES
+    wanted = manifest.BIDS_NAMES if bids else current
+    if wanted != current and _any_converted(db):
+        raise manifest.ManifestError(
+            "this dataset uses short file names; --BIDS cannot be added later"
+        )
+    if wanted != stored:
+        manifest.set_file_names(db, wanted)
+    return wanted == manifest.BIDS_NAMES
+
+
+def _subject_names(db, full_name: bool | None, bids: bool = True) -> bool:
     """Settle how this dataset builds subject labels (stored in the manifest): one dataset
-    never mixes both forms, or a patient would end up in two subject folders."""
+    never mixes both forms, or a patient would end up in two subject folders. Short file names
+    always use the full name."""
     stored = manifest.subject_names(db)
     current = stored or manifest.BRIEF_NAMES
-    wanted = manifest.FULL_NAMES if full_name else current
-    if wanted != current:
-        converted = db.execute(
-            "SELECT 1 FROM series WHERE conversion_status = 'converted' LIMIT 1"
-        ).fetchone()
-        if converted:
-            raise manifest.ManifestError(
-                "this dataset uses short subject labels; --full-name cannot be added later"
-            )
+    wanted = manifest.FULL_NAMES if full_name or not bids else current
+    if wanted != current and _any_converted(db):
+        raise manifest.ManifestError(
+            "this dataset uses short subject labels; --full-name cannot be added later"
+        )
     if wanted != stored:
         manifest.set_subject_names(db, wanted)
     return wanted == manifest.FULL_NAMES
@@ -876,20 +984,26 @@ def _converted(db, root: Path, row, full_name: bool) -> Converted:
 
 
 def convert_dataset(
-    dataset: Path, progress: Progress = no_progress, full_name: bool | None = None
+    dataset: Path,
+    progress: Progress = no_progress,
+    full_name: bool | None = None,
+    bids: bool | None = None,
 ) -> list[Outcome]:
     """Convert every supported or split, not yet converted series in the dataset's manifest.
 
     Converted series are never touched and their source is not needed again: the names they
     were converted under come from the manifest.
 
-    ``full_name=True`` builds subject labels from the full patient name; ``None`` keeps what
-    the dataset uses already (5+5 letters unless it was started with full names).
+    ``bids=True`` gives BIDS-style file names instead of short ones; ``full_name=True`` builds
+    their subject labels from the full patient name (short names always do). ``None`` keeps
+    what the dataset uses already (short names unless it was started with BIDS names; with
+    those, 5+5 letters unless it was started with full names).
     """
     db = manifest.open_manifest(dataset)
     try:
-        full = _subject_names(db, full_name)
-        _write_readme(dataset)
+        bids_names = _file_names(db, bids)
+        full = _subject_names(db, full_name, bids_names)
+        _write_readme(dataset, bids_names)
         root = manifest.source_root(db)
         rows = db.execute(
             "SELECT id, source_dir, conversion_status, geometry, study_instance_uid, subject, "
@@ -915,7 +1029,7 @@ def convert_dataset(
                 outcomes.append(
                     Outcome(row["id"], False, f"cannot read header ({type(exc).__name__})")
                 )
-        plans = plan_labels(inputs, converted, full)
+        plans = plan_labels(inputs, converted, full, bids_names)
 
         todo = [r for r in rows if r["id"] in plans]
         for row in progress(todo, total=len(todo), desc="Converting", unit="series"):

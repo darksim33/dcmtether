@@ -1,13 +1,18 @@
-"""BIDS-inspired file names.
+"""File names, in one of two forms (fixed per dataset, see :mod:`dcmtether.forward`).
+
+Short (the default), in ``sub-<FamilyGivenMiddle>/ses-<YYYYMMDD[THHMM]>/<datatype>/``::
+
+    <GivenName | subject label>_<NN>[_<ProtocolName>][_<XX>][_chunk-<n>]
+
+BIDS-inspired (``--BIDS``)::
 
     sub-<Family5><Given5 | FamilyGiven>_ses-<YYYYMMDD[THHMM]>[_acq-<desc>]_ser-<NN>[_<XX>]_<suffix>
 
 (No body-part entity: BodyPartExamined stays in manifest and sidecar.)
 
-Subject and session labels are built from PatientName and StudyDate, so **file names identify
-the patient** (deliberately: they are readable for the people working on the data). Code must
-still never print them: callers
-report problems by manifest series id.
+Subject and session labels and the given name are built from PatientName and StudyDate, so
+**file names identify the patient** (deliberately: they are readable for the people working on
+the data). Code must still never print them: callers report problems by manifest series id.
 """
 
 import re
@@ -70,6 +75,18 @@ def subject_label(patient_name: str | PersonName | None, full: bool = False) -> 
     return label
 
 
+def given_name_label(patient_name: str | PersonName | None) -> str | None:
+    """``MÜLLER^THOMAS`` → ``Thomas``: the whole given name, digits kept (short file names).
+
+    ``None`` if there is no usable given name (e.g. ``PHANTOM_QA``); callers then use the
+    subject label instead.
+    """
+    if not patient_name:
+        return None
+    name = patient_name if isinstance(patient_name, PersonName) else PersonName(patient_name)
+    return _full_name_part(name.given_name) or None
+
+
 def session_label(
     study_date: str | None, study_time: str | None = None, with_time: bool = False
 ) -> str:
@@ -111,6 +128,31 @@ def naming_text(
         (protocol_name, "ProtocolName"),
     ):
         if acq_label(text) is not None:
+            return text, source
+    return None, None
+
+
+def sequence_label(text: str | None) -> str | None:
+    """``t2_tse_tra fs*`` → ``t2_tse_tra_fs``: the text in full, only made safe for file names
+    (ASCII; every run of other characters than letters, digits and ``-`` becomes one ``_``).
+    ``None`` if nothing is left."""
+    label = re.sub(r"[^A-Za-z0-9-]+", "_", _fold(text or "")).strip("_-")
+    return label or None
+
+
+def protocol_text(
+    protocol_name: str | None, series_description: str | None
+) -> tuple[str | None, str | None]:
+    """The text the sequence name of short file names is taken from, and its source keyword.
+
+    ProtocolName first, else SeriesDescription; a value with nothing usable for
+    :func:`sequence_label` counts as missing. ``(None, None)`` if neither has anything.
+    """
+    for text, source in (
+        (protocol_name, "ProtocolName"),
+        (series_description, "SeriesDescription"),
+    ):
+        if sequence_label(text) is not None:
             return text, source
     return None, None
 
@@ -247,4 +289,22 @@ def file_stem(
     if chunk is not None:
         parts.append(f"chunk-{chunk}")
     parts.append(suffix)
+    return "_".join(parts)
+
+
+def short_file_stem(
+    first: str,
+    series: str,
+    sequence: str | None = None,
+    chunk: int | None = None,
+    dup: int | None = None,
+) -> str:
+    """``Thomas_05_t2_tse``; ``dup`` and ``chunk`` go at the end: ``…_t2_tse_02_chunk-1``."""
+    parts = [first, series]
+    if sequence:
+        parts.append(sequence)
+    if dup is not None:
+        parts.append(f"{dup:02d}")
+    if chunk is not None:
+        parts.append(f"chunk-{chunk}")
     return "_".join(parts)

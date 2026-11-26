@@ -23,12 +23,20 @@ _existing_dir = click.Path(exists=True, file_okay=False, path_type=Path)
 _existing_file = click.Path(exists=True, dir_okay=False, path_type=Path)
 _output_dir = click.Path(file_okay=False, path_type=Path)
 _verbose = click.option("--verbose", "-v", is_flag=True, help="Also list every series.")
+_bids = click.option(
+    "--BIDS",
+    "--bids",
+    "bids",
+    is_flag=True,
+    help="BIDS-style file names (sub-..._ses-..._acq-..._ser-NN_<suffix>) instead of "
+    "<GivenName>_<NN>_<ProtocolName>; fixed for a dataset on its first conversion.",
+)
 _full_name = click.option(
     "--full-name",
     "-f",
     is_flag=True,
-    help="Use the full patient name in subject labels instead of 5+5 letters; fixed for a "
-    "dataset on its first conversion.",
+    help="With --BIDS: the full patient name in subject labels instead of 5+5 letters (the "
+    "default names always use it); fixed for a dataset on its first conversion.",
 )
 _body_part = click.option(
     "--body-part",
@@ -93,16 +101,19 @@ def scan(source: Path, dataset: Path, body_part: bool) -> None:
 
 @main.command("to-nii")
 @click.argument("dataset", type=_existing_dir)
+@_bids
 @_full_name
 @_verbose
-def to_nii(dataset: Path, full_name: bool, verbose: bool) -> None:
+def to_nii(dataset: Path, bids: bool, full_name: bool, verbose: bool) -> None:
     """Convert scanned series in DATASET to NIfTI + tether.json.
 
     Converts every 'supported' or 'split' series not converted yet; failed ones are retried.
-    File names contain patient names and study dates, so the dataset must not be shared as is.
+    Files are named <GivenName>_<NN>_<ProtocolName> in sub-<FullName>/ses-<StudyDate>/ (or
+    BIDS-style with --BIDS). File and folder names contain patient names and study dates, so
+    the dataset must not be shared as is.
     """
     with _errors():
-        result = api.to_nii(dataset, full_name=full_name, progress=_progress)
+        result = api.to_nii(dataset, bids=bids, full_name=full_name, progress=_progress)
     _echo(report.conversion_lines(result, verbose))
     if not result.ok:
         raise click.exceptions.Exit(1)
@@ -117,11 +128,17 @@ def to_nii(dataset: Path, full_name: bool, verbose: bool) -> None:
     type=_output_dir,
     help="Dataset directory (default: SOURCE itself).",
 )
+@_bids
 @_full_name
 @_body_part
 @_verbose
 def run(
-    source: Path, dataset: Path | None, full_name: bool, body_part: bool, verbose: bool
+    source: Path,
+    dataset: Path | None,
+    bids: bool,
+    full_name: bool,
+    body_part: bool,
+    verbose: bool,
 ) -> None:
     """Scan SOURCE and convert it into a dataset; safe to run again.
 
@@ -135,7 +152,14 @@ def run(
         _echo(report.update_lines(summary, update, body_part))
 
     with _errors():
-        result = api.run(source, dataset, full_name=full_name, progress=_progress, _scanned=scanned)
+        result = api.run(
+            source,
+            dataset,
+            bids=bids,
+            full_name=full_name,
+            progress=_progress,
+            _scanned=scanned,
+        )
     _echo(report.conversion_lines(result.conversion, verbose))
     if not result.ok:
         raise click.exceptions.Exit(1)

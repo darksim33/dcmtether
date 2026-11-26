@@ -18,7 +18,8 @@ from two rules, in this order:
   acquisition (``MFSPLIT`` in ImageType, XA software) with the same SeriesTime, as dcm2niix
   groups XA classic data; any series type (diffusion, echoes, dynamics, ...), ORIGINAL/DERIVED
   and the pixel component (magnitude, phase, ...) kept apart. SeriesNumbers may differ freely.
-- Diffusion protocol (``diffusion-protocol``): single-volume diffusion series (suffix ``dwi``)
+- Diffusion protocol (``diffusion-protocol``): single-volume diffusion series (suffix ``dwi``,
+  from the BIDS file name or the sidecar's ``DcmTether.Suffix``)
   with the same protocol (ProtocolName, else SeriesDescription, without b-value tokens such as
   ``b50``) and echo time, whose b-value and gradient differ from each other (a repeated
   measurement is not merged).
@@ -134,7 +135,10 @@ class _Member:
 
     @property
     def is_dwi(self) -> bool:
-        return self.nifti.name.endswith(f"_dwi{NIFTI_SUFFIX}")
+        """Suffix ``dwi``: in the name (BIDS names), else in the sidecar (short names)."""
+        if self.nifti.name.endswith(f"_dwi{NIFTI_SUFFIX}"):
+            return True
+        return self.sidecar.get("DcmTether", {}).get("Suffix") == "dwi"
 
     def per_volume(self) -> dict[str, list]:
         """Every sidecar key as one value per volume."""
@@ -388,9 +392,15 @@ def _merged_data(members: list[_Member]) -> tuple[np.ndarray, tuple[float, float
 
 
 def _output_path(dataset: Path, first: _Member, in_place: bool) -> Path:
+    """The first series' name with ``_desc-merged`` before the suffix (BIDS names, which start
+    with ``sub-``), or ``_merged`` at the end (short names)."""
     relative = first.nifti.relative_to(dataset)
-    stem, suffix = relative.name.removesuffix(NIFTI_SUFFIX).rsplit("_", 1)
-    name = f"{stem}_desc-merged_{suffix}{NIFTI_SUFFIX}"
+    stem = relative.name.removesuffix(NIFTI_SUFFIX)
+    if stem.startswith("sub-"):
+        stem, suffix = stem.rsplit("_", 1)
+        name = f"{stem}_desc-merged_{suffix}{NIFTI_SUFFIX}"
+    else:
+        name = f"{stem}_merged{NIFTI_SUFFIX}"
     folder = dataset if in_place else dataset / DERIVATIVES_DIR / MERGED_DIR
     return folder / relative.parent / name
 

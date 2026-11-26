@@ -200,9 +200,10 @@ def _log_classified(logger: DatasetLog, summary: ScanSummary, only: set[int] | N
 
 
 def _convert(
-    dataset: Path, logger: DatasetLog, full_name: bool, progress: Progress
+    dataset: Path, logger: DatasetLog, full_name: bool, bids: bool, progress: Progress
 ) -> ConversionResult:
-    result = ConversionResult(tuple(convert_dataset(dataset, progress, full_name or None)))
+    outcomes = convert_dataset(dataset, progress, full_name or None, bids or None)
+    result = ConversionResult(tuple(outcomes))
     for outcome in result.outcomes:
         if outcome.ok:
             logger.event("series_converted", series_id=outcome.series_id, outputs=outcome.outputs)
@@ -251,6 +252,7 @@ def scan(
 def to_nii(
     dataset: StrPath,
     *,
+    bids: bool = False,
     full_name: bool = False,
     log: bool = True,
     progress: Progress | None = None,
@@ -258,19 +260,22 @@ def to_nii(
     """Convert the scanned series of ``dataset`` to NIfTI + tether.json.
 
     Converts every ``supported`` or ``split`` series not converted yet; failed ones are
-    retried. ``full_name`` uses the full patient name in subject labels; it is fixed for a
-    dataset on its first conversion. File names contain patient names and study dates.
+    retried. Files are named ``<GivenName>_<NN>_<ProtocolName>`` in
+    ``sub-<FullName>/ses-<StudyDate>/``; ``bids`` gives BIDS-style names instead, whose subject
+    labels use 5+5 letters of the name unless ``full_name``. Both are fixed for a dataset on its
+    first conversion. File and folder names contain patient names and study dates.
     """
     dataset = _existing_dir(dataset, "DATASET")
     has_manifest = manifest_path(dataset).exists()
     with logged(dataset if log and has_manifest else None, "to-nii", new_file=True) as logger:
-        return _convert(dataset, logger, full_name, progress or no_progress)
+        return _convert(dataset, logger, full_name, bids, progress or no_progress)
 
 
 def run(
     source: StrPath,
     output: StrPath | None = None,
     *,
+    bids: bool = False,
     full_name: bool = False,
     log: bool = True,
     progress: Progress | None = None,
@@ -281,6 +286,7 @@ def run(
     The dataset is written into ``source`` unless ``output`` names another directory. The
     first call creates it. Later calls (same source and output) add new series, rescan series
     that are not converted yet and retry failed ones; converted series are never touched.
+    ``bids`` and ``full_name`` as for :func:`to_nii`.
     """
     source = _existing_dir(source, "SOURCE")
     dataset = source if output is None else Path(output)
@@ -309,7 +315,7 @@ def run(
         _log_classified(logger, summary, only=set(update.new) | set(update.rescanned))
         if _scanned is not None:  # the CLI reports the scan before the conversion starts
             _scanned(summary, update)
-        conversion = _convert(dataset, logger, full_name, progress)
+        conversion = _convert(dataset, logger, full_name, bids, progress)
     return RunResult(
         summary,
         tuple(update.new),
