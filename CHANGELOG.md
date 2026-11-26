@@ -14,6 +14,30 @@ file formats).
   (`i`/`j`/`k`) it runs along after the reorientation to closest RAS. Both go under
   `DcmTether.PerVolume` if they differ between volumes. No `PhaseEncodingDirection`: DICOM
   does not record the polarity.
+- `--BIDS` for `run` and `to-nii` (API: `bids=True`; desktop app: "BIDS-style file names"):
+  the BIDS-inspired names of earlier versions
+  (`sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz`), unchanged. Fixed for a dataset
+  on its first conversion; refused for a dataset already converted with the default names.
+- Sidecar keys for the default names: `DcmTether.Suffix` (the series type, e.g. `dwi`, `T1w`,
+  which the name no longer shows), `DcmTether.NameSource` (ProtocolName or
+  SeriesDescription) and `DcmTether.FirstNameSource` (`GivenName` or `Subject`).
+
+### Changed
+
+- **Shorter default file names** (#17): `<FirstName>_<SeriesNumber>_<ProtocolName>`, e.g.
+  `sub-MuellerThomas/ses-20260314/anat/Thomas_05_t2_tse_tra_fs_384.nii.gz`. The folders stay
+  as they were, but subject labels are the full name (as with `--full-name`). The given name
+  and ProtocolName (else SeriesDescription) are used in full, never cut; there is no contrast
+  suffix in the name. Duplicates and chunks are marked at the end (`_02`, `_chunk-1`). When
+  PatientName has no given name (phantoms, study codes), the subject label takes its place,
+  clash number included (`sub-Phantomqa01/…/Phantomqa01_03_t1_vibe.nii.gz`).
+  `--full-name` now only matters with `--BIDS`.
+- Manifest schema 6: `meta.file_names` (`short`/`bids`). Datasets converted by earlier versions
+  get `bids` when opened, so their new series keep the BIDS names; older dcmtether versions
+  cannot open schema 6 manifests.
+- `merge`: merged files of default-named series are called `<first series' name>_merged`
+  (BIDS names keep `_desc-merged_<suffix>`); single diffusion series are found by the sidecar's
+  `DcmTether.Suffix` as well as by the `_dwi` name.
 
 ## [0.3.0] - 2026-11-11
 

@@ -19,8 +19,9 @@ files, compare two series, and write derivatives back as DICOM. Research use onl
 ## Tabs
 
 - **Convert** — DICOM folder → dataset (the CLI's `run`). Leave the dataset folder empty to
-  write the dataset into the DICOM folder itself. "Full patient name in subject labels" is the
-  `--full-name` option; it is fixed for a dataset on its first conversion. Safe to run again:
+  write the dataset into the DICOM folder itself. "BIDS-style file names" is the `--BIDS`
+  option and "Full patient name in subject labels (BIDS names)" the `--full-name` option; both
+  are fixed for a dataset on its first conversion. Safe to run again:
   new series are added, failed ones retried, converted ones left alone.
 - **Merge** (experimental) — series of one measurement (e.g. one per b-value) of a converted
   dataset → one 4D NIfTI (the CLI's `merge`). Leave the series ids empty to find the groups

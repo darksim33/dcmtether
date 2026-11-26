@@ -62,6 +62,7 @@ class App:
         self.root = root
         self.worker = Worker()
         self.fields: dict[str, tk.StringVar] = {}
+        self.bids = tk.BooleanVar(value=False)
         self.full_name = tk.BooleanVar(value=False)
         self.compare_after = tk.BooleanVar(value=True)
         self.derivative = tk.StringVar(value="seg")
@@ -187,10 +188,15 @@ class App:
         ttk.Label(frame, text="Empty: written into the DICOM folder.", style="Hint.TLabel").grid(
             row=3, column=1, sticky="w", padx=4
         )
+        ttk.Checkbutton(frame, text="BIDS-style file names", variable=self.bids).grid(
+            row=4, column=1, sticky="w", padx=4
+        )
         ttk.Checkbutton(
-            frame, text="Full patient name in subject labels", variable=self.full_name
-        ).grid(row=4, column=1, sticky="w", padx=4)
-        self._run_button(frame, 5, "Convert", self.convert)
+            frame,
+            text="Full patient name in subject labels (BIDS names)",
+            variable=self.full_name,
+        ).grid(row=5, column=1, sticky="w", padx=4)
+        self._run_button(frame, 6, "Convert", self.convert)
 
     def _merge_tab(self, tabs: ttk.Notebook) -> None:
         frame = self._tab(
@@ -284,9 +290,10 @@ class App:
     def convert(self) -> None:
         if self._missing("source"):
             return
-        source, dataset, full_name = (
+        source, dataset, bids, full_name = (
             self.value("source"),
             self.value("dataset"),
+            self.bids.get(),
             self.full_name.get(),
         )
 
@@ -294,6 +301,7 @@ class App:
             result = api.run(
                 source,
                 dataset or None,
+                bids=bids,
                 full_name=full_name,
                 progress=progress,
                 _scanned=lambda summary, update: show(report.update_lines(summary, update)),

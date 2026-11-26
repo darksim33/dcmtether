@@ -5,7 +5,7 @@
 ```
 dataset/
 ├── manifest.sqlite                 scan and conversion records
-├── README.md                       identifying-data warning, file name entities
+├── README.md                       identifying-data warning, how files are named
 ├── logs/dcmtether_<time>.jsonl     structured log (no PHI)
 ├── derivatives/merged/sub-…/…      merged series (`merge`; NIfTI + sidecar + tether;
 │                                   with --in-place/--replace beside the series instead)
@@ -18,8 +18,32 @@ dataset/
 
 ## File names
 
-BIDS-inspired, not BIDS-compliant:
-`sub-<subject>_ses-<session>[_acq-<acq>]_ser-<NN>[_<XX>][_chunk-<n>]_<suffix>`.
+Two forms; a dataset keeps the one it was first converted with (stored in the manifest).
+
+### Default: `<FirstName>_<SeriesNumber>[_<ProtocolName>][_<XX>][_chunk-<n>]`
+
+In `sub-<FamilyGivenMiddle>/ses-<session>/anat|dwi/`, e.g.
+`sub-MuellerThomas/ses-20260314/anat/Thomas_05_t2_tse_tra_fs_384.nii.gz`.
+
+| Part | Content |
+|---|---|
+| `sub-` (folder) | family + given + middle name in full, ASCII, CamelCase, digits included — **identifies the patient** |
+| `ses-` (folder) | StudyDate `YYYYMMDD`; `THHMM` from StudyTime only when one subject has several studies that day |
+| `<FirstName>` | the given name in full (ASCII, digits kept); without one (phantoms, study codes such as `PHANTOM_QA`) the subject folder's label, clash number included (`Phantomqa01_03_t1_vibe`) |
+| `<SeriesNumber>` | at least two digits |
+| `<ProtocolName>` | ProtocolName (else SeriesDescription) in full, never cut: every run of characters other than letters, digits and `-` becomes one `_`; left out if there is neither |
+| `_XX` | counter `01`, `02`, … only for series that would otherwise share a name in one session (e.g. same ProtocolName and SeriesNumber), in manifest order |
+| `_chunk-<n>` | one per image plane when a series holds several (e.g. localizers), InstanceNumber order |
+
+There is no suffix in the name. The series type (the BIDS suffix below) is still worked out the
+same way: it decides between `anat/` and `dwi/` and is recorded in the sidecar
+(`DcmTether.Suffix`, `DcmTether.SuffixRule`).
+
+### `--BIDS`: `sub-<subject>_ses-<session>[_acq-<acq>]_ser-<NN>[_<XX>][_chunk-<n>]_<suffix>`
+
+BIDS-inspired, not BIDS-compliant; in `sub-<subject>/ses-<session>/anat|dwi/`, e.g.
+`sub-MuellThoma_ses-20260314_acq-sagPDFs_ser-05_PDw.nii.gz`. Datasets converted with
+dcmtether 0.3.0 or earlier use these names, and keep them for their new series.
 
 | Entity | Content |
 |---|---|
@@ -40,14 +64,20 @@ used.
 Diffusion series are recognised by b-values that differ between volumes, else (e.g. a series
 with a single b-value) by the ImageType value `DIFFUSION`, else by the keywords `dwi`, `dti`,
 `ivim` or `diff` (not `difference`) in the `acq-` text. Map rules are checked first, since
-scanner maps carry `DIFFUSION` too.
+scanner maps carry `DIFFUSION` too. The `acq-` text is SeriesDescription (else ProtocolName)
+with both forms of file names.
+
+### Clashes
 
 Name clashes are never resolved silently:
 
 - Different PatientIDs giving the same `sub-` label (e.g. phantoms or study codes in
   PatientName) get a two-digit number appended, `sub-PhantQa01`, `sub-PhantQa02`, …, in the
   manifest order of each patient's first series, reported as a warning. A patient converted
-  before the clash appeared keeps its label; its number is not reused.
+  before the clash appeared keeps its label; its number is not reused. The given name in the
+  default file names is not numbered: the subject folders already tell the patients apart. A
+  subject label used in place of a missing given name keeps its number (`Phantomqa01_…`,
+  `Phantomqa02_…`), since then it alone tells the two patients' files apart.
 - Series sharing a file name are numbered (`_XX`) and reported as a warning. Names that
   differ only in upper/lower case count as the same name.
 - Session label clashes (several studies of one subject with the same StudyDate and StudyTime)
@@ -90,8 +120,12 @@ relative to a common one; series *k*'s volumes follow those of the series before
 ## Sidecar (`<stem>.json`)
 
 Readable BIDS-style keys (times in seconds) — not used to rebuild the DICOM, no patient
-identifiers. `DcmTether` holds tool information: `Version`, `SuffixRule`, `AcqSource`
-(SeriesDescription/ProtocolName), `Duplicate` (the `_XX` counter), `DiffusionSource`, `Chunk`,
+identifiers. `DcmTether` holds tool information: `Version`, `Suffix` (default file names
+only: the series type, which the name does not show), `SuffixRule`, `AcqSource` (`--BIDS`:
+SeriesDescription/ProtocolName, the source of `acq-`), `NameSource` (default file names:
+ProtocolName/SeriesDescription, the source of the sequence name), `FirstNameSource` (default
+file names: `GivenName`, or `Subject` when the subject label stood in), `Duplicate` (the `_XX`
+counter), `DiffusionSource`, `Chunk`,
 for 4D series `VolumeKey` (the DICOM attribute that tells the volumes apart), and
 `PerVolume` (values that differ between volumes, and diffusion values; see below).
 
@@ -130,17 +164,18 @@ a volume has none, absent if no volume has one). It comes from `DiffusionBValueX
 store none. Values are as stored, not rotated. Only diffusion series (suffix `dwi` or a
 diffusion map) get them: Philips writes a zero b-value into other images too.
 
-## Manifest (`manifest.sqlite`, schema 5)
+## Manifest (`manifest.sqlite`, schema 6)
 
 | Table | Content |
 |---|---|
-| `meta` | schema/tool version, source root, scan time, `subject_names` (`brief`/`full`, set on the first conversion) |
+| `meta` | schema/tool version, source root, scan time, `file_names` (`short`/`bids`) and `subject_names` (`brief`/`full`), both set on the first conversion |
 | `series` | one row per SeriesInstanceUID: id, status (`supported`/`split`/`unsupported`), reasons, equipment, geometry summary, conversion status and error, and the names it was converted under (subject and session labels, file stem, `_XX` counter, PatientID, subject label before clash numbering), `merged_into` (`merge --replace`: the series whose output holds this one's volumes) |
 | `instances` | one row per file (path relative to the source root) |
 | `outputs` | one row per NIfTI: series id, chunk, NIfTI/tether/sidecar paths, number of volumes |
 | `skipped_files` | files that are not DICOM images, with the reason |
 
-Older manifests are upgraded in place when opened. The manifest holds UIDs, PatientIDs and source paths: it is as sensitive as the DICOM headers.
+Older manifests are upgraded in place when opened; one with converted series (all named the
+BIDS way then) gets `file_names` `bids`, so its new series are named like the old ones. The manifest holds UIDs, PatientIDs and source paths: it is as sensitive as the DICOM headers.
 
 ## Log
 

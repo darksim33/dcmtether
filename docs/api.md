@@ -34,13 +34,16 @@ Only the names listed on this page (`dcmtether.__all__`) are the API. Modules su
 
 ## Converting
 
-### `run(source, output=None, *, full_name=False, log=True, progress=None)` → `RunResult`
+### `run(source, output=None, *, bids=False, full_name=False, log=True, progress=None)` → `RunResult`
 
 Scan `source` and convert it into a dataset; safe to call again ([usage](usage.md#converting)).
-The dataset is `output`, or `source` itself.
+The dataset is `output`, or `source` itself. Files are named `<FirstName>_<NN>_<ProtocolName>`;
+`bids=True` names them the BIDS-inspired way, and `full_name=True` then uses the full patient
+name in their subject labels (the `--BIDS` and `--full-name` options; both fixed for a dataset
+on its first conversion, see [formats](formats.md#file-names)).
 
 ```python
-result = dt.run("dicom/", "study/", full_name=True)
+result = dt.run("dicom/", "study/", bids=True, full_name=True)
 if not result.ok:
     for series_id, reason in result.failed.items():
         print(series_id, reason)
@@ -74,9 +77,10 @@ for s in summary.series:
         print(s.id, "; ".join(s.reasons))
 ```
 
-### `to_nii(dataset, *, full_name=False, log=True, progress=None)` → `ConversionResult`
+### `to_nii(dataset, *, bids=False, full_name=False, log=True, progress=None)` → `ConversionResult`
 
 Convert every scanned series of `dataset` that is not converted yet; failed ones are retried.
+`bids` and `full_name` as for `run`.
 
 `ConversionResult`: `outcomes` (one `Outcome` per attempted series: `series_id`, `ok`,
 `message`, `outputs`, `warning`), and from them `converted` (ids), `failed` (id → reason),
@@ -154,7 +158,7 @@ dt.to_pmap(nifti, "adc.nii.gz", template, "adc.dcm")
 | Exception | Raised when |
 |---|---|
 | `DcmtetherError` | base class of all of the following |
-| `ManifestError` | no manifest, a manifest that already exists, another SOURCE, a SOURCE with `sub-*` folders on the first in-place run, `full_name` on a short-label dataset |
+| `ManifestError` | no manifest, a manifest that already exists, another SOURCE, a SOURCE with `sub-*` folders on the first in-place run, `full_name` on a short-label dataset, `bids` on a dataset converted with the default names |
 | `ConversionError` | a series cannot be converted (normally reported per series, not raised) |
 | `ReverseError` | `to_dcm`: the NIfTI does not match its tether, or output files exist |
 | `MergeError` | `merge_series`: named series that are not converted, split, or not on one grid |

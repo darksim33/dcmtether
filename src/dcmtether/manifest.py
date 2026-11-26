@@ -17,7 +17,7 @@ from dcmtether.errors import DcmtetherError
 from dcmtether.scanning import ScanResult
 
 MANIFEST_NAME = "manifest.sqlite"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Version 1; newer versions are reached via _UPGRADES only, so new
 # manifests and upgraded old ones always end up identical.
@@ -103,6 +103,14 @@ ALTER TABLE series ADD COLUMN subject_base TEXT;  -- subject label before clash 
     5: """
 ALTER TABLE series ADD COLUMN merged_into INTEGER;  -- id of the series with the merged output
 """,
+    # 5 → 6: short file names became the default; a dataset with converted series was converted
+    # under BIDS names (the only ones before), so it keeps them for its new series too.
+    6: """
+INSERT INTO meta (key, value)
+    SELECT 'file_names', 'bids'
+    WHERE EXISTS (SELECT 1 FROM series WHERE conversion_status = 'converted')
+      AND NOT EXISTS (SELECT 1 FROM meta WHERE key = 'file_names');
+""",
 }
 
 
@@ -160,6 +168,23 @@ def set_subject_names(db: sqlite3.Connection, value: str) -> None:
     with db:
         db.execute("DELETE FROM meta WHERE key = 'subject_names'")
         db.execute("INSERT INTO meta (key, value) VALUES ('subject_names', ?)", (value,))
+
+
+#: ``meta.file_names``: short file names (``<Given>_<NN>_<ProtocolName>``) or BIDS-style ones.
+SHORT_NAMES = "short"
+BIDS_NAMES = "bids"
+
+
+def file_names(db: sqlite3.Connection) -> str | None:
+    """How the dataset names its files; ``None`` until its first conversion."""
+    row = db.execute("SELECT value FROM meta WHERE key = 'file_names'").fetchone()
+    return row[0] if row else None
+
+
+def set_file_names(db: sqlite3.Connection, value: str) -> None:
+    with db:
+        db.execute("DELETE FROM meta WHERE key = 'file_names'")
+        db.execute("INSERT INTO meta (key, value) VALUES ('file_names', ?)", (value,))
 
 
 def instance_paths(db: sqlite3.Connection, series_id: int) -> list[str]:
