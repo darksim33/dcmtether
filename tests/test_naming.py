@@ -226,3 +226,66 @@ def test_subject_label_full(name, label):
 def test_subject_label_full_errors(name):
     with pytest.raises(LabelError):
         naming.subject_label(name, full=True)
+
+
+# --- short names (the default): <FirstName>_<NN>_<ProtocolName> --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "label"),
+    [
+        ("MÜLLER^THOMAS", "Thomas"),
+        ("Strauß^Jürgen", "Juergen"),
+        ("van der Berg^Anna-Lena", "Annalena"),
+        ("DOE^JOHN^MIDDLE^DR^JR", "John"),  # given name only
+        ("Study01^Sub-007", "Sub007"),  # digits kept
+    ],
+)
+def test_given_name_label(name, label):
+    assert naming.given_name_label(name) == label
+
+
+@pytest.mark.parametrize("name", [None, "", "PHANTOM_QA", "DOE^", "DOE^李", "DOE^-"])
+def test_no_given_name_label(name):
+    """No usable given name: the caller falls back to the subject label."""
+    assert naming.given_name_label(name) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    [
+        ("t2_tse_tra_fs_384", "t2_tse_tra_fs_384"),  # kept as is, underscores included
+        ("sag PD fs", "sag_PD_fs"),
+        ("t2*_gre / me", "t2_gre_me"),  # unsafe characters: one "_" per run
+        ("ep2d-diff  b50", "ep2d-diff_b50"),
+        ("  _localizer_ ", "localizer"),
+        ("Diffusion ÄDC", "Diffusion_AeDC"),
+        ("a" * 80, "a" * 80),  # never cut
+        ("*** ", None),
+        (None, None),
+    ],
+)
+def test_sequence_label(text, label):
+    assert naming.sequence_label(text) == label
+
+
+@pytest.mark.parametrize(
+    ("protocol", "description", "expected"),
+    [
+        ("t1_vibe", "T1 VIBE post", ("t1_vibe", "ProtocolName")),
+        ("", "T1 VIBE post", ("T1 VIBE post", "SeriesDescription")),
+        ("***", "T1 VIBE post", ("T1 VIBE post", "SeriesDescription")),
+        (None, None, (None, None)),
+    ],
+)
+def test_protocol_text_prefers_protocol_name(protocol, description, expected):
+    assert naming.protocol_text(protocol, description) == expected
+
+
+def test_short_file_stem():
+    assert naming.short_file_stem("Thomas", "05", "t2_tse") == "Thomas_05_t2_tse"
+    assert naming.short_file_stem("Thomas", "05") == "Thomas_05"
+    assert naming.short_file_stem("Thomas", "05", "t2_tse", dup=2) == "Thomas_05_t2_tse_02"
+    assert (
+        naming.short_file_stem("Thomas", "01", "loc", chunk=1, dup=2) == "Thomas_01_loc_02_chunk-1"
+    )

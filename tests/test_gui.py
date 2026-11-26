@@ -184,6 +184,26 @@ def test_convert_rebuild_and_compare(app, tmp_path):
     assert "Identical: 5 instances compared." in _press(app, app.compare)
 
 
+@pytest.mark.parametrize(
+    ("bids", "expected"),
+    [
+        (False, "sub-SyntheticPhantom/ses-20260101/anat/Phantom_01_SYNTHETIC.nii.gz"),
+        (
+            True,
+            "sub-SynthPhant/ses-20260101/anat/"
+            "sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_T1w.nii.gz",
+        ),
+    ],
+)
+def test_convert_file_names(app, tmp_path, bids, expected):
+    write_series(make_series(), tmp_path / "src" / "a")
+    app.fields["source"].set(str(tmp_path / "src"))
+    app.fields["dataset"].set(str(tmp_path / "dataset"))
+    app.bids.set(bids)
+    assert "Converted 1 series, 0 failed." in _press(app, app.convert)
+    assert [r["nifti_path"] for r in output_rows(tmp_path / "dataset")] == [expected]
+
+
 def test_failures_and_errors(app, tmp_path):
     src = tmp_path / "src"
     series = make_series()
@@ -375,7 +395,7 @@ def test_merge_finds_the_groups(app, tmp_path):
     text = _press(app, app.merge)
     assert "(3 volumes)." in text and text.count("Merged series") == 1
     assert app.status.get() == "Done." and not app.show_log.get()
-    assert list((tmp_path / "dataset" / "derivatives" / "merged").rglob("*_desc-merged_dwi.nii.gz"))
+    assert list((tmp_path / "dataset" / "derivatives" / "merged").rglob("*_merged.nii.gz"))
     assert float(app.bar["value"]) == float(app.bar["maximum"])
     _no_secrets(text, tmp_path)
 
@@ -398,7 +418,7 @@ def test_merge_replace_asks_first(app, tmp_path, monkeypatch):
     app.placement.set("replace")
     app.merge()
     assert len(asked) == 1 and not app.worker.busy
-    assert not list((tmp_path / "dataset").rglob("*_desc-merged_dwi.nii.gz"))
+    assert not list((tmp_path / "dataset").rglob("*_merged.nii.gz"))
     monkeypatch.setattr(app, "_confirm", lambda text: True)
     text = _press(app, app.merge)
     assert "replaced the single series" in text

@@ -33,11 +33,11 @@ def _b_series(b_value: float, number: int, protocol="ep2d_ivim", gradient=None, 
     return series
 
 
-def _dataset(tmp_path: Path, *series) -> Path:
+def _dataset(tmp_path: Path, *series, bids: bool = False) -> Path:
     for s in series:
         write_series(s, tmp_path / "src" / f"s{s.spec.series_number}")
     dataset = tmp_path / "dataset"
-    result = dt.run(tmp_path / "src", dataset)
+    result = dt.run(tmp_path / "src", dataset, bids=bids)
     assert result.ok, result.failed
     return dataset
 
@@ -62,11 +62,11 @@ def test_one_series_per_b_value_is_merged(tmp_path):
     assert path.relative_to(dataset).parts[:5] == (
         "derivatives",
         "merged",
-        "sub-SynthPhant",
+        "sub-SyntheticPhantom",
         "ses-20260101",
         "dwi",
     )
-    assert path.name.endswith("_desc-merged_dwi.nii.gz")
+    assert path.name == "Phantom_05_ep2d_ivim_merged.nii.gz"  # the first series' name
     merged = nib.load(path)
     assert merged.shape[3] == 3
     by_number = {
@@ -234,12 +234,25 @@ def test_two_acquisitions_of_one_protocol_are_two_groups(tmp_path):
     assert len({g.path for g in groups}) == 2
 
 
+def test_bids_names_are_merged_with_a_desc_entity(tmp_path):
+    dataset = _dataset(tmp_path, _b_series(0, 5), _b_series(50, 6), bids=True)
+    [group] = dt.merge_series(dataset).groups
+    assert group.path.relative_to(dataset).parts == (
+        "derivatives",
+        "merged",
+        "sub-SynthPhant",
+        "ses-20260101",
+        "dwi",
+        "sub-SynthPhant_ses-20260101_acq-IVIMB0_ser-05_desc-merged_dwi.nii.gz",
+    )
+
+
 def test_merged_tether_writes_the_source_series_back(tmp_path):
     series = [_b_series(0, 5), _b_series(50, 6, gradient=(1.0, 0.0, 0.0)), _b_series(800, 7)]
     dataset = _dataset(tmp_path, *series)
     [group] = dt.merge_series(dataset).groups
     assert group.tether_path is not None and group.no_tether is None
-    assert group.tether_path.name.endswith("_desc-merged_dwi.tether.json")
+    assert group.tether_path.name == "Phantom_05_ep2d_ivim_merged.tether.json"
 
     rebuilt = tmp_path / "rebuilt"
     written = dt.to_dcm(group.path, rebuilt).paths

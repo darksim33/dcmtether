@@ -108,6 +108,24 @@ def test_body_part_lists_every_series(runner, tmp_path):
     assert "body part" not in again.output  # nothing new or rescanned
 
 
+@pytest.mark.parametrize("flag", ["--BIDS", "--bids"])
+def test_to_nii_bids_names(runner, tmp_path, flag):
+    write_series(make_series(), tmp_path / "src" / "a")
+    assert runner.invoke(main, ["scan", str(tmp_path / "src"), str(tmp_path / "ds")]).exit_code == 0
+    result = runner.invoke(main, ["to-nii", flag, str(tmp_path / "ds")])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "ds" / "sub-SynthPhant" / "ses-20260101" / "anat").is_dir()
+
+
+def test_to_nii_default_names(runner, tmp_path):
+    write_series(make_series(), tmp_path / "src" / "a")
+    assert runner.invoke(main, ["scan", str(tmp_path / "src"), str(tmp_path / "ds")]).exit_code == 0
+    result = runner.invoke(main, ["to-nii", str(tmp_path / "ds")])
+    assert result.exit_code == 0, result.output
+    folder = tmp_path / "ds" / "sub-SyntheticPhantom" / "ses-20260101" / "anat"
+    assert (folder / "Phantom_01_SYNTHETIC.nii.gz").is_file()
+
+
 def test_scan_refuses_existing_manifest(runner, tmp_path):
     write_series(make_series(), tmp_path / "src")
     args = ["scan", str(tmp_path / "src"), str(tmp_path / "dataset")]

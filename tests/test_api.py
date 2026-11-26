@@ -180,12 +180,41 @@ def test_scan_then_to_nii_equals_run(tmp_path):
     assert names == [Path(r["nifti_path"]).name for r in output_rows(tmp_path / "at-once")]
 
 
+def test_default_file_names(tmp_path):
+    src = tmp_path / "src"
+    write_series(_series(1), src / "a")
+    assert dt.run(src, tmp_path / "dataset").ok
+    [row] = output_rows(tmp_path / "dataset")
+    assert row["nifti_path"] == "sub-SyntheticPhantom/ses-20260101/anat/Phantom_01_SYNTHETIC.nii.gz"
+
+
+def test_bids_file_names(tmp_path):
+    src = tmp_path / "src"
+    write_series(_series(1), src / "a")
+    dt.scan(src, tmp_path / "dataset")
+    assert dt.to_nii(tmp_path / "dataset", bids=True).ok
+    [row] = output_rows(tmp_path / "dataset")
+    assert row["nifti_path"] == (
+        "sub-SynthPhant/ses-20260101/anat/sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_T1w.nii.gz"
+    )
+
+
 def test_full_name(tmp_path):
     src = tmp_path / "src"
     write_series(_series(1), src / "a")
-    assert dt.run(src, tmp_path / "dataset", full_name=True).ok
+    assert dt.run(src, tmp_path / "dataset", bids=True, full_name=True).ok
     [row] = output_rows(tmp_path / "dataset")
-    assert row["nifti_path"].startswith("sub-SyntheticPhantom/")
+    assert row["nifti_path"].startswith(
+        "sub-SyntheticPhantom/ses-20260101/anat/sub-SyntheticPhantom_"
+    )
+
+
+def test_bids_is_refused_for_a_short_name_dataset(tmp_path):
+    src = tmp_path / "src"
+    write_series(_series(1), src / "a")
+    assert dt.run(src, tmp_path / "dataset").ok
+    with pytest.raises(dt.ManifestError, match="short file names; --BIDS cannot be added later"):
+        dt.run(src, tmp_path / "dataset", bids=True)
 
 
 def test_warnings_are_listed(tmp_path):

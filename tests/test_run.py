@@ -174,7 +174,7 @@ def test_verbose_lists_every_series(tmp_path):
 
 def test_full_name_is_set_on_the_first_run_and_kept(tmp_path):
     write_series(_series(1), tmp_path / "src" / "a")
-    result = _run(tmp_path / "src", tmp_path / "dataset", "-fv")
+    result = _run(tmp_path / "src", tmp_path / "dataset", "--BIDS", "-fv")
     assert result.exit_code == 0, result.output
     assert (tmp_path / "dataset" / "sub-SyntheticPhantom").is_dir()
     write_series(_series(2), tmp_path / "src" / "b")
@@ -186,7 +186,7 @@ def test_full_name_is_set_on_the_first_run_and_kept(tmp_path):
 
 def test_full_name_is_refused_for_a_short_label_dataset(tmp_path):
     write_series(_series(1), tmp_path / "src" / "a")
-    _run(tmp_path / "src", tmp_path / "dataset")
+    _run(tmp_path / "src", tmp_path / "dataset", "--BIDS")
     result = _run(tmp_path / "src", tmp_path / "dataset", "--full-name")
     assert result.exit_code == 1
     assert "this dataset uses short subject labels" in result.output
@@ -232,7 +232,7 @@ def test_converted_series_survives_an_unreadable_source(tmp_path):
 
 def test_converted_series_keeps_its_name_when_naming_rules_change(tmp_path, monkeypatch):
     write_series(_twin(1), tmp_path / "src" / "a")
-    _run(tmp_path / "src", tmp_path / "dataset")
+    _run(tmp_path / "src", tmp_path / "dataset", "--BIDS")
     before = _names(tmp_path / "dataset")
     monkeypatch.setattr(naming, "contrast_suffix", lambda *a: naming.Suffix("NEW", "test"))
     write_series(_twin(2), tmp_path / "src" / "b")  # same number + name
@@ -248,13 +248,14 @@ def _downgrade_to_v3(dataset: Path) -> None:
     with sqlite3.connect(dataset / "manifest.sqlite") as db:
         for column in ("stem", "dup", "patient_id", "subject_base", "merged_into"):
             db.execute(f"ALTER TABLE series DROP COLUMN {column}")
+        db.execute("DELETE FROM meta WHERE key = 'file_names'")
         db.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
 
 
 def test_v3_manifest_is_upgraded_and_backfilled(tmp_path):
     for n, folder in enumerate("ab", start=1):  # same name: converted as _01 / _02
         write_series(_twin(n), tmp_path / "src" / folder)
-    _run(tmp_path / "src", tmp_path / "dataset")
+    _run(tmp_path / "src", tmp_path / "dataset", "--BIDS")
     expected = manifest_rows(tmp_path / "dataset")
     assert [(r["stem"], r["dup"]) for r in expected] == [
         ("sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_T1w", 1),
@@ -271,7 +272,7 @@ def test_v3_manifest_is_upgraded_and_backfilled(tmp_path):
 
 def test_upgraded_manifest_without_source_cannot_vouch_for_a_subject_label(tmp_path):
     write_series(_series(1), tmp_path / "src" / "a")
-    _run(tmp_path / "src", tmp_path / "dataset")
+    _run(tmp_path / "src", tmp_path / "dataset", "--BIDS")
     _downgrade_to_v3(tmp_path / "dataset")
     shutil.move(tmp_path / "src" / "a", tmp_path / "away")
     other = make_series(SeriesSpec(series_number=2, extra={"PatientID": "OTHER"}))
@@ -293,7 +294,7 @@ def test_late_series_gets_the_next_free_duplicate_counter(tmp_path):
             for ds in series.datasets:
                 ds.StudyDate = ""  # fails for now
         write_series(series, tmp_path / "src" / folder)
-    result = _run(tmp_path / "src", tmp_path / "dataset")
+    result = _run(tmp_path / "src", tmp_path / "dataset", "--BIDS")
     assert result.exit_code == 1
     assert _status(tmp_path / "dataset") == {1: "converted", 2: "failed", 3: "converted"}
     before = _names(tmp_path / "dataset")
@@ -317,7 +318,7 @@ def test_late_series_gets_the_next_free_duplicate_counter(tmp_path):
 
 def test_series_converted_without_counter_keeps_the_bare_name(tmp_path):
     write_series(_twin(1), tmp_path / "src" / "a")
-    _run(tmp_path / "src", tmp_path / "dataset")
+    _run(tmp_path / "src", tmp_path / "dataset", "--BIDS")
     before = _names(tmp_path / "dataset")
     write_series(_twin(2), tmp_path / "src" / "b")
     result = _run(tmp_path / "src", tmp_path / "dataset")
@@ -330,13 +331,34 @@ def test_series_converted_without_counter_keeps_the_bare_name(tmp_path):
 def test_names_that_differ_only_in_case_are_numbered(tmp_path):
     for folder, description in (("a", "sag T1"), ("b", "Sag T1")):
         write_series(_twin(ord(folder), description), tmp_path / "src" / folder)
-    result = _run(tmp_path / "src", tmp_path / "dataset")
+    result = _run(tmp_path / "src", tmp_path / "dataset", "--BIDS")
     assert result.exit_code == 0, result.output
     assert sorted(_names(tmp_path / "dataset").values()) == [
         "sub-SynthPhant_ses-20260101_acq-SagT1_ser-01_02_T1w.nii.gz",
         "sub-SynthPhant_ses-20260101_acq-sagT1_ser-01_01_T1w.nii.gz",
     ]
     assert "duplicate name: series #1, #2 map to the same name" in result.output
+
+
+def test_short_names_that_differ_only_in_case_are_numbered(tmp_path):
+    for folder, description in (("a", "sag T1"), ("b", "Sag T1")):
+        write_series(_twin(ord(folder), description), tmp_path / "src" / folder)
+    result = _run(tmp_path / "src", tmp_path / "dataset")
+    assert result.exit_code == 0, result.output
+    assert sorted(_names(tmp_path / "dataset").values()) == [
+        "Phantom_01_Sag_T1_02.nii.gz",
+        "Phantom_01_sag_T1_01.nii.gz",
+    ]
+    assert "duplicate name: series #1, #2 map to the same name" in result.output
+
+
+def test_bids_is_refused_for_a_short_name_dataset(tmp_path):
+    write_series(_series(1), tmp_path / "src" / "a")
+    _run(tmp_path / "src", tmp_path / "dataset")
+    result = _run(tmp_path / "src", tmp_path / "dataset", "--BIDS")
+    assert result.exit_code == 1
+    assert "this dataset uses short file names; --BIDS cannot be added later" in result.output
+    assert "Synth" not in result.output and "Phantom" not in result.output
 
 
 # --- in-place runs: what belongs to the dataset -------------------------------------------------

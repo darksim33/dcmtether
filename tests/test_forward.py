@@ -31,9 +31,12 @@ from dcmtether.manifest import SCHEMA_VERSION, ManifestError, update_manifest, w
 from dcmtether.scanning import scan
 
 # Synthetic defaults: PatientName "Synthetic^Phantom", StudyDate 20260101, description
-# "SYNTHETIC", TR 500 / TE 15 → T1w by parameters.
-DEFAULT_STEM = "sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_T1w"
-DEFAULT_DIR = Path("sub-SynthPhant/ses-20260101/anat")
+# "SYNTHETIC", no ProtocolName, TR 500 / TE 15 → T1w by parameters.
+DEFAULT_STEM = "Phantom_01_SYNTHETIC"
+DEFAULT_DIR = Path("sub-SyntheticPhantom/ses-20260101/anat")
+# The same series with --BIDS.
+BIDS_STEM = "sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_T1w"
+BIDS_DIR = Path("sub-SynthPhant/ses-20260101/anat")
 
 
 def _dataset(tmp_path: Path, *series: SyntheticSeries, names=None) -> Path:
@@ -192,7 +195,7 @@ def test_per_volume_keeps_keys_without_unit_rule(tmp_path):
 
 def test_diffusion_goes_to_dwi(tmp_path):
     dataset = _dataset(tmp_path, make_4d(n_volumes=3, kind="diffusion"))
-    convert_dataset(dataset)
+    convert_dataset(dataset, bids=True)
     nifti = _single_output(dataset)
     assert nifti.relative_to(dataset).parts[:3] == ("sub-SynthPhant", "ses-20260101", "dwi")
     assert nifti.name == "sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_dwi.nii.gz"
@@ -214,7 +217,7 @@ def test_diffusion_goes_to_dwi(tmp_path):
 )
 def test_private_tag_diffusion_goes_to_dwi(tmp_path, vendor, gradient_key, b0_gradient):
     dataset = _dataset(tmp_path, make_4d(n_volumes=3, kind=f"diffusion_{vendor}"))
-    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    assert [o.ok for o in convert_dataset(dataset, bids=True)] == [True]
     nifti = _single_output(dataset)
     assert nifti.name == "sub-SynthPhant_ses-20260101_acq-SYNTHETIC_ser-01_dwi.nii.gz"
     sidecar = json.loads(nifti.with_suffix("").with_suffix(".json").read_text("utf-8"))
@@ -301,7 +304,7 @@ def test_split_series_become_chunks(tmp_path, make):
     rows = output_rows(dataset)
     assert [r["chunk"] for r in rows] == list(range(1, len(series.parts) + 1))
     for row, part in zip(rows, series.parts, strict=True):
-        assert f"_chunk-{row['chunk']}_" in row["nifti_path"]
+        assert row["nifti_path"].endswith(f"_chunk-{row['chunk']}.nii.gz")
         _world_space_check(dataset / row["nifti_path"], part)
         sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
         assert sidecar["DcmTether"]["Chunk"] == row["chunk"]
@@ -455,7 +458,7 @@ def test_manifest_records_outputs(tmp_path):
     rows = {r["source_dir"]: r for r in _manifest_rows(dataset)}
     converted, split, unsupported = rows["a"], rows["loc"], rows["none"]
     assert converted["conversion_status"] == "converted"
-    assert converted["subject"] == "SynthPhant"
+    assert converted["subject"] == "SyntheticPhantom"
     assert converted["session"] == "20260101"
     assert split["conversion_status"] == "converted"
     assert unsupported["conversion_status"] is None  # never attempted
@@ -469,7 +472,7 @@ def test_manifest_records_outputs(tmp_path):
     first = outputs[0]
     assert first["nifti_path"] == (DEFAULT_DIR / f"{DEFAULT_STEM}.nii.gz").as_posix()
     assert first["tether_path"].endswith(".tether.json")
-    assert first["sidecar_path"].endswith("_T1w.json")
+    assert first["sidecar_path"] == (DEFAULT_DIR / f"{DEFAULT_STEM}.json").as_posix()
     assert first["n_volumes"] == 1
     with sqlite3.connect(dataset / "manifest.sqlite") as db:
         version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -533,7 +536,7 @@ def _patient(seed, name, pid, date="20260101", time="120000", study=None, number
     return s
 
 
-# --- acq- source: SeriesDescription, else ProtocolName -----------------------------------------
+# --- acq- source (BIDS names): SeriesDescription, else ProtocolName ---------------------------
 
 
 def _named_series(protocol: str | None, description: str) -> SyntheticSeries:
@@ -541,9 +544,9 @@ def _named_series(protocol: str | None, description: str) -> SyntheticSeries:
     return make_series(SeriesSpec(series_description=description, extra=extra))
 
 
-def _converted_stem_and_sidecar(tmp_path, series) -> tuple[str, dict]:
+def _converted_stem_and_sidecar(tmp_path, series, bids=None) -> tuple[str, dict]:
     dataset = _dataset(tmp_path, series)
-    assert all(o.ok for o in convert_dataset(dataset))
+    assert all(o.ok for o in convert_dataset(dataset, bids=bids))
     [row] = output_rows(dataset)
     sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
     return Path(row["nifti_path"]).name.removesuffix(".nii.gz"), sidecar
@@ -551,7 +554,7 @@ def _converted_stem_and_sidecar(tmp_path, series) -> tuple[str, dict]:
 
 def test_acq_uses_series_description(tmp_path):
     stem, sidecar = _converted_stem_and_sidecar(
-        tmp_path, _named_series("t1 something", "sag PD fs")
+        tmp_path, _named_series("t1 something", "sag PD fs"), bids=True
     )
     assert stem == "sub-SynthPhant_ses-20260101_acq-sagPDFs_ser-01_PDw"
     assert sidecar["DcmTether"]["AcqSource"] == "SeriesDescription"
@@ -559,18 +562,20 @@ def test_acq_uses_series_description(tmp_path):
 
 
 def test_suffix_keywords_come_from_the_series_description(tmp_path):
-    stem, _ = _converted_stem_and_sidecar(tmp_path, _named_series("t1 something", "t2_tse"))
+    stem, _ = _converted_stem_and_sidecar(
+        tmp_path, _named_series("t1 something", "t2_tse"), bids=True
+    )
     assert stem.endswith("_acq-t2Tse_ser-01_T2w")
 
 
 def test_acq_falls_back_to_protocol_name(tmp_path):
-    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series("sag PD fs", ""))
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series("sag PD fs", ""), bids=True)
     assert stem == "sub-SynthPhant_ses-20260101_acq-sagPDFs_ser-01_PDw"
     assert sidecar["DcmTether"]["AcqSource"] == "ProtocolName"
 
 
 def test_no_acq_without_protocol_and_description(tmp_path):
-    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series(None, ""))
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series(None, ""), bids=True)
     assert stem == "sub-SynthPhant_ses-20260101_ser-01_T1w"
     assert "AcqSource" not in sidecar["DcmTether"]
 
@@ -584,7 +589,7 @@ def test_subject_label_clash_is_numbered_without_naming_them(tmp_path):
     b = _patient(2, "MUELLERS^THOMASINA", "P2")
     c = _patient(3, "SMITH^ANNA", "P3")
     dataset = _dataset(tmp_path, a, b, c)
-    outcomes = {o.series_id: o for o in convert_dataset(dataset)}
+    outcomes = {o.series_id: o for o in convert_dataset(dataset, bids=True)}
     assert all(o.ok for o in outcomes.values())
     assert _subjects(dataset) == {1: "MuellThoma01", 2: "MuellThoma02", 3: "SmithAnna"}
     for sid in (1, 2):
@@ -600,7 +605,7 @@ def test_subject_numbers_follow_the_first_series_of_each_patient(tmp_path):
     b = _patient(2, "PHANTOM^QA", "QA-1")
     a2 = _patient(3, "PHANTOM^QA", "QA-2", date="20260202", number=2)
     dataset = _dataset(tmp_path, a1, b, a2)
-    assert all(o.ok for o in convert_dataset(dataset))
+    assert all(o.ok for o in convert_dataset(dataset, bids=True))
     assert _subjects(dataset) == {1: "PhantQa01", 2: "PhantQa02", 3: "PhantQa01"}
 
 
@@ -608,7 +613,7 @@ def test_converted_patient_keeps_its_subject_label(tmp_path):
     write_series(_patient(1, "PHANTOM^QA", "QA-1"), tmp_path / "src" / "s0")
     dataset = tmp_path / "dataset"
     write_manifest(dataset, scan(tmp_path / "src"))
-    assert all(o.ok for o in convert_dataset(dataset))
+    assert all(o.ok for o in convert_dataset(dataset, bids=True))
     # A second phantom (other PatientID) and a new session of the first one arrive later.
     write_series(_patient(2, "PHANTOM^QA", "QA-2"), tmp_path / "src" / "s1")
     write_series(_patient(3, "PHANTOM^QA", "QA-1", date="20260202"), tmp_path / "src" / "s2")
@@ -627,7 +632,7 @@ def test_full_name_subject_labels_are_kept_for_the_dataset(tmp_path):
     write_series(_patient(1, "MÜLLER^THOMAS", "P1"), tmp_path / "src" / "s0")
     dataset = tmp_path / "dataset"
     write_manifest(dataset, scan(tmp_path / "src"))
-    assert all(o.ok for o in convert_dataset(dataset, full_name=True))
+    assert all(o.ok for o in convert_dataset(dataset, full_name=True, bids=True))
     assert (dataset / "sub-MuellerThomas").is_dir()
     assert _subject_names(dataset) == [("full",)]
     # Later runs need no flag: the dataset remembers.
@@ -639,7 +644,7 @@ def test_full_name_subject_labels_are_kept_for_the_dataset(tmp_path):
 
 def test_full_names_are_refused_for_a_dataset_converted_with_short_labels(tmp_path):
     dataset = _dataset(tmp_path, _patient(1, "MUELLER^THOMAS", "P1"))
-    assert all(o.ok for o in convert_dataset(dataset))
+    assert all(o.ok for o in convert_dataset(dataset, bids=True))
     assert _subject_names(dataset) == [("brief",)]
     with pytest.raises(ManifestError, match="short subject labels") as exc:
         convert_dataset(dataset, full_name=True)
@@ -652,7 +657,7 @@ def test_full_names_can_be_chosen_while_nothing_is_converted(tmp_path):
     for ds in series.datasets:
         ds.StudyDate = ""  # fails: nothing gets converted
     dataset = _dataset(tmp_path, series)
-    assert not any(o.ok for o in convert_dataset(dataset))
+    assert not any(o.ok for o in convert_dataset(dataset, bids=True))
     convert_dataset(dataset, full_name=True)
     assert _subject_names(dataset) == [("full",)]
 
@@ -667,7 +672,7 @@ def test_full_names_can_be_chosen_while_nothing_is_converted(tmp_path):
 )
 def test_full_names_that_differ_are_no_clash(tmp_path, first, second, subjects):
     dataset = _dataset(tmp_path, _patient(1, first, "P1"), _patient(2, second, "P2"))
-    outcomes = convert_dataset(dataset, full_name=True)
+    outcomes = convert_dataset(dataset, full_name=True, bids=True)
     assert all(o.ok and o.warning is None for o in outcomes)
     assert _subjects(dataset) == subjects
 
@@ -679,7 +684,7 @@ def test_clash_numbers_never_give_another_patients_label(tmp_path):
         _patient(2, "PHANTOM1^", "P2"),
         _patient(3, "PHANTOM101^", "P3"),
     )
-    assert all(o.ok for o in convert_dataset(dataset, full_name=True))
+    assert all(o.ok for o in convert_dataset(dataset, full_name=True, bids=True))
     assert _subjects(dataset) == {1: "Phantom102", 2: "Phantom103", 3: "Phantom101"}
 
 
@@ -687,7 +692,7 @@ def test_full_name_clash_is_numbered(tmp_path):
     dataset = _dataset(
         tmp_path, _patient(1, "PHANTOM^QA", "QA-1"), _patient(2, "PHANTOM^QA", "QA-2")
     )
-    assert all(o.ok for o in convert_dataset(dataset, full_name=True))
+    assert all(o.ok for o in convert_dataset(dataset, full_name=True, bids=True))
     assert _subjects(dataset) == {1: "PhantomQa01", 2: "PhantomQa02"}
 
 
@@ -714,7 +719,7 @@ def test_repeated_description_and_series_number_are_numbered(tmp_path):
     a = _patient(1, "DOE^JANE", "P1", study="2.25.11", desc="t1 a")
     b = _patient(2, "DOE^JANE", "P1", study="2.25.11", desc="t1 a")
     dataset = _dataset(tmp_path, a, b)
-    outcomes = convert_dataset(dataset)
+    outcomes = convert_dataset(dataset, bids=True)
     assert all(o.ok for o in outcomes)
     assert [o.warning for o in outcomes] == [
         "duplicate name: series #1, #2 map to the same name, numbered _01.._02"
@@ -737,6 +742,218 @@ def test_missing_patient_name_fails_cleanly(tmp_path):
     assert [o.message for o in outcomes] == ["PatientName is missing"]
 
 
+# --- file names: short (default) or BIDS (--BIDS) ----------------------------------------------
+
+
+def _file_names(dataset: Path) -> list[tuple]:
+    with sqlite3.connect(dataset / "manifest.sqlite") as db:
+        return db.execute("SELECT value FROM meta WHERE key = 'file_names'").fetchall()
+
+
+def _stems(dataset: Path) -> list[str]:
+    rows = sorted(output_rows(dataset), key=lambda r: r["nifti_path"])
+    return [Path(r["nifti_path"]).name.removesuffix(".nii.gz") for r in rows]
+
+
+def test_default_names_are_short(tmp_path):
+    dataset = _dataset(tmp_path, make_series())
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    folder = dataset / "sub-SyntheticPhantom" / "ses-20260101" / "anat"
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "Phantom_01_SYNTHETIC.json",
+        "Phantom_01_SYNTHETIC.nii.gz",
+        "Phantom_01_SYNTHETIC.tether.json",
+    ]
+    assert _file_names(dataset) == [("short",)]
+    assert _subject_names(dataset) == [("full",)]  # short names: never abbreviated
+    assert "<FirstName>_<SeriesNumber>" in (dataset / "README.md").read_text("utf-8")
+
+
+def test_short_names_use_the_full_protocol_name(tmp_path):
+    series = _named_series("t2_tse_tra_fs_384 long protocol", "sag PD fs")
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, series)
+    assert stem == "Phantom_01_t2_tse_tra_fs_384_long_protocol"
+    info = sidecar["DcmTether"]
+    assert info["NameSource"] == "ProtocolName"
+    # The suffix is still classified (folder, sidecar), from the description as before.
+    assert info["Suffix"] == "PDw" and info["SuffixRule"] == "keyword:pdw"
+    assert "AcqSource" not in info
+
+
+def test_short_names_fall_back_to_the_series_description(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series(None, "sag PD fs"))
+    assert stem == "Phantom_01_sag_PD_fs"
+    assert sidecar["DcmTether"]["NameSource"] == "SeriesDescription"
+
+
+def test_short_name_without_protocol_and_description(tmp_path):
+    stem, sidecar = _converted_stem_and_sidecar(tmp_path, _named_series(None, ""))
+    assert stem == "Phantom_01"
+    assert "NameSource" not in sidecar["DcmTether"]
+    assert sidecar["DcmTether"]["Suffix"] == "T1w"
+
+
+def test_short_diffusion_goes_to_dwi(tmp_path):
+    dataset = _dataset(tmp_path, make_4d(n_volumes=3, kind="diffusion"))
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    nifti = _single_output(dataset)
+    assert nifti.relative_to(dataset).parts == (
+        "sub-SyntheticPhantom",
+        "ses-20260101",
+        "dwi",
+        "Phantom_01_SYNTHETIC.nii.gz",
+    )
+    assert _sidecar_of(nifti)["DcmTether"]["Suffix"] == "dwi"
+
+
+def test_short_names_without_given_name_use_the_subject_label(tmp_path):
+    dataset = _dataset(tmp_path, _patient(1, "PHANTOM_QA", "P1"), _patient(2, "DOE^JANE", "P2"))
+    assert all(o.ok for o in convert_dataset(dataset))
+    rows = sorted(output_rows(dataset), key=lambda r: r["series_id"])
+    assert [r["nifti_path"] for r in rows] == [
+        "sub-Phantomqa/ses-20260101/anat/Phantomqa_01_t1.nii.gz",
+        "sub-DoeJane/ses-20260101/anat/Jane_01_t1.nii.gz",
+    ]
+    sources = [_sidecar_of(dataset / r["nifti_path"])["DcmTether"] for r in rows]
+    assert [info["FirstNameSource"] for info in sources] == ["Subject", "GivenName"]
+
+
+def test_subject_label_fallback_keeps_the_clash_number(tmp_path):
+    """Without a given name the number is all that tells the files of two patients apart."""
+    a = _patient(1, "PHANTOM_QA", "QA-1")
+    b = _patient(2, "PHANTOM_QA", "QA-2")
+    dataset = _dataset(tmp_path, a, b)
+    outcomes = convert_dataset(dataset)
+    assert all(o.ok for o in outcomes)
+    assert all(o.warning.startswith("subject label clash") for o in outcomes)
+    assert sorted(r["nifti_path"] for r in output_rows(dataset)) == [
+        "sub-Phantomqa01/ses-20260101/anat/Phantomqa01_01_t1.nii.gz",
+        "sub-Phantomqa02/ses-20260101/anat/Phantomqa02_01_t1.nii.gz",
+    ]
+
+
+def test_given_names_are_not_numbered_on_a_subject_clash(tmp_path):
+    a = _patient(1, "PHANTOM^QA", "QA-1")
+    b = _patient(2, "PHANTOM^QA", "QA-2")
+    dataset = _dataset(tmp_path, a, b)
+    assert all(o.ok for o in convert_dataset(dataset))
+    assert sorted(r["nifti_path"] for r in output_rows(dataset)) == [
+        "sub-PhantomQa01/ses-20260101/anat/Qa_01_t1.nii.gz",
+        "sub-PhantomQa02/ses-20260101/anat/Qa_01_t1.nii.gz",
+    ]
+
+
+def test_short_duplicates_are_numbered_at_the_end(tmp_path):
+    a = _patient(1, "DOE^JANE", "P1", study="2.25.11", desc="t1 a")
+    b = _patient(2, "DOE^JANE", "P1", study="2.25.11", desc="t1 a")
+    dataset = _dataset(tmp_path, a, b)
+    outcomes = convert_dataset(dataset)
+    assert [o.warning for o in outcomes] == [
+        "duplicate name: series #1, #2 map to the same name, numbered _01.._02"
+    ] * 2
+    assert _stems(dataset) == ["Jane_01_t1_a_01", "Jane_01_t1_a_02"]
+    assert convert_dataset(dataset) == []
+
+
+def test_short_names_in_other_sessions_are_no_duplicates(tmp_path):
+    a = _patient(1, "DOE^JANE", "P1", study="2.25.11")
+    b = _patient(2, "DOE^JANE", "P1", date="20260202", study="2.25.12")
+    dataset = _dataset(tmp_path, a, b)
+    outcomes = convert_dataset(dataset)
+    assert all(o.ok and o.warning is None for o in outcomes)
+    paths = sorted(r["nifti_path"] for r in output_rows(dataset))
+    assert paths == [
+        "sub-DoeJane/ses-20260101/anat/Jane_01_t1.nii.gz",
+        "sub-DoeJane/ses-20260202/anat/Jane_01_t1.nii.gz",
+    ]
+
+
+def test_short_names_of_split_series_end_with_the_chunk(tmp_path):
+    dataset = _dataset(tmp_path, make_localizer())
+    assert [o.ok for o in convert_dataset(dataset)] == [True]
+    stems = _stems(dataset)
+    assert len(stems) == 3
+    for n, stem in enumerate(stems, start=1):
+        assert stem.startswith("Phantom_") and stem.endswith(f"_chunk-{n}")
+
+
+def test_bids_names_with_the_flag(tmp_path):
+    dataset = _dataset(tmp_path, make_series())
+    assert [o.ok for o in convert_dataset(dataset, bids=True)] == [True]
+    nifti = dataset / BIDS_DIR / f"{BIDS_STEM}.nii.gz"
+    assert nifti.is_file()
+    info = _sidecar_of(nifti)["DcmTether"]
+    assert info["AcqSource"] == "SeriesDescription"
+    assert "Suffix" not in info and "NameSource" not in info  # BIDS sidecars as before
+    assert _file_names(dataset) == [("bids",)]
+    assert _subject_names(dataset) == [("brief",)]
+    assert "`acq-`" in (dataset / "README.md").read_text("utf-8")
+
+
+def test_bids_names_with_full_name(tmp_path):
+    dataset = _dataset(tmp_path, make_series())
+    assert [o.ok for o in convert_dataset(dataset, full_name=True, bids=True)] == [True]
+    [row] = output_rows(dataset)
+    assert row["nifti_path"] == (
+        "sub-SyntheticPhantom/ses-20260101/anat/"
+        "sub-SyntheticPhantom_ses-20260101_acq-SYNTHETIC_ser-01_T1w.nii.gz"
+    )
+
+
+def test_file_names_are_kept_for_the_dataset(tmp_path):
+    write_series(_patient(1, "DOE^JANE", "P1"), tmp_path / "src" / "s0")
+    dataset = tmp_path / "dataset"
+    write_manifest(dataset, scan(tmp_path / "src"))
+    assert all(o.ok for o in convert_dataset(dataset, bids=True))
+    # Later runs need no flag: the dataset remembers.
+    write_series(_patient(2, "DOE^JANE", "P1", date="20260202"), tmp_path / "src" / "s1")
+    update_manifest(dataset, scan(tmp_path / "src"))
+    assert all(o.ok for o in convert_dataset(dataset))
+    assert _stems(dataset) == [
+        "sub-DoeJane_ses-20260101_acq-t1_ser-01_T1w",
+        "sub-DoeJane_ses-20260202_acq-t1_ser-01_T1w",
+    ]
+
+
+def test_bids_is_refused_for_a_dataset_converted_with_short_names(tmp_path):
+    dataset = _dataset(tmp_path, _patient(1, "DOE^JANE", "P1"))
+    assert all(o.ok for o in convert_dataset(dataset))
+    with pytest.raises(ManifestError, match="short file names; --BIDS cannot be added later"):
+        convert_dataset(dataset, bids=True)
+    assert _file_names(dataset) == [("short",)]
+
+
+def test_bids_can_be_chosen_while_nothing_is_converted(tmp_path):
+    series = _patient(1, "DOE^JANE", "P1")
+    for ds in series.datasets:
+        ds.StudyDate = ""  # fails: nothing gets converted
+    dataset = _dataset(tmp_path, series)
+    assert not any(o.ok for o in convert_dataset(dataset))
+    assert _file_names(dataset) == [("short",)]
+    convert_dataset(dataset, bids=True)
+    assert _file_names(dataset) == [("bids",)]
+
+
+@pytest.mark.parametrize(("converted", "names"), [(True, "bids"), (False, "short")])
+def test_older_manifests_keep_bids_names_once_converted(tmp_path, converted, names):
+    """A schema 5 manifest has no ``file_names``: one with converted series was converted under
+    BIDS names (the only names then), so its new series must get them too."""
+    write_series(_patient(1, "DOE^JANE", "P1"), tmp_path / "src" / "s0")
+    dataset = tmp_path / "dataset"
+    write_manifest(dataset, scan(tmp_path / "src"))
+    if converted:
+        assert all(o.ok for o in convert_dataset(dataset, bids=True))
+    with sqlite3.connect(dataset / "manifest.sqlite") as db:
+        db.execute("DELETE FROM meta WHERE key IN ('file_names', 'subject_names')")
+        db.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    write_series(_patient(2, "DOE^JANE", "P1", date="20260202"), tmp_path / "src" / "s1")
+    update_manifest(dataset, scan(tmp_path / "src"))
+    assert all(o.ok for o in convert_dataset(dataset))
+    assert _file_names(dataset) == [(names,)]
+    expected = "sub-DoeJane_ses-20260202_acq-t1_ser-01_T1w" if converted else "Jane_01_t1"
+    assert expected in _stems(dataset)
+
+
 # --- CLI ---------------------------------------------------------------------------------------
 
 
@@ -746,7 +963,7 @@ def test_cli_to_nii(tmp_path):
     c = _patient(3, "MUELLERS^THOMASINA", "P2")
     ok = _patient(4, "SMITH^ANNA", "P3")
     dataset = _dataset(tmp_path, a, b, c, ok)
-    result = CliRunner().invoke(main, ["to-nii", str(dataset)])
+    result = CliRunner().invoke(main, ["to-nii", "--BIDS", str(dataset)])
     assert result.exit_code == 1
     assert "Converted 2 series, 2 failed." in result.output
     assert "session label clash" in result.output
@@ -972,16 +1189,16 @@ def test_diffusion_maps_go_to_dwi_with_their_own_suffix(
     assert all(o.ok for o in convert_dataset(dataset))
     [row] = output_rows(dataset)
     nifti = Path(row["nifti_path"])
-    assert nifti.parts[:3] == ("sub-SynthPhant", "ses-20260101", "dwi")
-    assert nifti.name.endswith(f"_ser-01_{suffix}.nii.gz")
+    assert nifti.parts[:3] == ("sub-SyntheticPhantom", "ses-20260101", "dwi")
     sidecar = json.loads((dataset / row["sidecar_path"]).read_text("utf-8"))
+    assert sidecar["DcmTether"]["Suffix"] == suffix
     assert sidecar["DcmTether"]["SuffixRule"] == rule
 
 
 def test_flip_angle_in_the_description_is_not_an_fa_map(tmp_path):
-    stem, _ = _converted_stem_and_sidecar(
+    _, sidecar = _converted_stem_and_sidecar(
         tmp_path, make_series(SeriesSpec(series_description="t1_fa15"))
     )
-    assert stem.endswith("_T1w")
+    assert sidecar["DcmTether"]["Suffix"] == "T1w"
     [row] = output_rows(tmp_path / "dataset")
     assert Path(row["nifti_path"]).parts[2] == "anat"
